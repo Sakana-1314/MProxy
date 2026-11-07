@@ -1,0 +1,31 @@
+# Build output
+cdn-proxy.exe
+server/cdn-proxy.exe
+server/cdn-proxy-dev.exe
+*.exe
+*.test
+*.out
+
+# Runtime data
+data/
+server/data/
+server/.devdata/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Frontend
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local env
+.env
+.env.*
