@@ -35,11 +35,6 @@ const unlimited = computed(() => (props.user?.quota_bytes ?? 0) <= 0)
 
 const addedBytes = computed(() => Math.max(0, Math.round(Number(form.addGB ?? 0) * 1024 ** 3)))
 
-const newQuota = computed(() => {
-  const current = props.user?.quota_bytes ?? 0
-  return current > 0 ? current + addedBytes.value : 0
-})
-
 const formRules: FormRules = {
   addGB: {
     type: 'number',
@@ -104,7 +99,7 @@ async function save() {
     @update:show="emit('update:show', $event)"
   >
     <n-alert type="info" :bordered="false" style="margin-bottom: 18px">
-      配额只能增加，不能减少或重置；增加后立即永久生效。累计流量超过配额后，新的代理连接会被拒绝。
+      配额只能增加，不能减少或重置。
     </n-alert>
 
     <n-alert v-if="user" type="default" :bordered="false" style="margin-bottom: 18px">
@@ -128,11 +123,6 @@ async function save() {
         >
           <template #suffix>GB</template>
         </n-input-number>
-        <template #feedback>
-          <span class="field-hint">
-            {{ unlimited ? '不限流量账号无需增加配额' : `增加后永久配额：${formatQuota(newQuota)}` }}
-          </span>
-        </template>
       </n-form-item>
     </n-form>
 
@@ -155,11 +145,6 @@ async function save() {
 </template>
 
 <style scoped>
-.field-hint {
-  font-size: 11.5px;
-  opacity: 0.62;
-}
-
 .modal-footer {
   display: flex;
   justify-content: flex-end;

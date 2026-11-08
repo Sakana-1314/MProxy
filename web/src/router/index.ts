@@ -5,7 +5,6 @@ import { isLoggedIn } from '@/lib/auth'
 declare module 'vue-router' {
   interface RouteMeta {
     title?: string
-    subtitle?: string
     public?: boolean
   }
 }
@@ -28,25 +27,25 @@ const router = createRouter({
           path: 'dashboard',
           name: 'dashboard',
           component: () => import('@/views/DashboardView.vue'),
-          meta: { title: '概览', subtitle: '代理运行状态与流量趋势' },
+          meta: { title: '概览' },
         },
         {
           path: 'rules',
           name: 'rules',
           component: () => import('@/views/RulesView.vue'),
-          meta: { title: '规则管理', subtitle: '目标 URL 到 CDN 上游 URL 的精确映射' },
+          meta: { title: '规则管理' },
         },
         {
           path: 'users',
           name: 'users',
           component: () => import('@/views/UsersView.vue'),
-          meta: { title: '用户与配额', subtitle: '代理账号、累计流量与永久配额' },
+          meta: { title: '用户与配额' },
         },
         {
           path: 'settings',
           name: 'settings',
           component: () => import('@/views/SettingsView.vue'),
-          meta: { title: '系统设置', subtitle: '站点信息、接入参数与管理员安全' },
+          meta: { title: '系统设置' },
         },
       ],
     },

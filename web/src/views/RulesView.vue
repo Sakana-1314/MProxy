@@ -158,14 +158,14 @@ const columns = computed<DataTableColumns<Rule>>(() => [
       h('div', { style: 'font-weight: 600; font-size: 13px; line-height: 1.4' }, row.name),
   },
   {
-    title: '代理配置',
+    title: '访问地址',
     key: 'target_url',
     width: 260,
     render: (row) =>
       endpointNode(targetSchemeLabel(row.target_scheme), displayHost(row.match_host), row.match_port),
   },
   {
-    title: 'CDN 上游',
+    title: '转发地址',
     key: 'upstream_url',
     width: 380,
     render: (row) =>
@@ -223,7 +223,7 @@ onMounted(load)
         <n-input
           v-model:value="keyword"
           class="search-input"
-          placeholder="搜索规则名称、目标 Host 或 CDN 上游"
+          placeholder="搜索规则名称或地址"
           clearable
           @keyup.enter="applySearch"
           @clear="applySearch"

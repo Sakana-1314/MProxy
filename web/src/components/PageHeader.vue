@@ -3,7 +3,6 @@ import { useThemeVars } from 'naive-ui'
 
 defineProps<{
   title: string
-  subtitle?: string
 }>()
 
 const tv = useThemeVars()
@@ -13,7 +12,6 @@ const tv = useThemeVars()
   <div class="page-header">
     <div class="page-heading">
       <h1 :style="{ color: tv.textColor1 }">{{ title }}</h1>
-      <p v-if="subtitle" :style="{ color: tv.textColor3 }">{{ subtitle }}</p>
     </div>
     <div class="page-actions">
       <slot />
@@ -37,11 +35,6 @@ const tv = useThemeVars()
   line-height: 1.3;
   font-weight: 650;
   letter-spacing: -0.02em;
-}
-
-.page-heading p {
-  margin: 5px 0 0;
-  font-size: 13.5px;
 }
 
 .page-actions {

@@ -81,14 +81,14 @@ func NormalizeHost(host string) string {
 // supported: every target must be explicitly allowlisted.
 func ValidateTargetHost(host string) error {
 	if host == "" {
-		return fmt.Errorf("目标 Host 不能为空")
+		return fmt.Errorf("目标地址不能为空")
 	}
 	if len(host) > 253 {
-		return fmt.Errorf("目标 Host 过长")
+		return fmt.Errorf("目标地址过长")
 	}
 	if strings.ContainsAny(host, "*/@?#: ") {
 		if net.ParseIP(host) == nil {
-			return fmt.Errorf("目标 Host 不能包含通配符、端口、路径或协议")
+			return fmt.Errorf("目标地址不能包含通配符、端口、路径或协议")
 		}
 	}
 	if ip := net.ParseIP(host); ip != nil {
@@ -100,13 +100,13 @@ func ValidateTargetHost(host string) error {
 // ValidateUpstreamHost checks an upstream hostname or IP.
 func ValidateUpstreamHost(host string) error {
 	if host == "" {
-		return fmt.Errorf("CDN 上游地址不能为空")
+		return fmt.Errorf("转发地址不能为空")
 	}
 	if len(host) > 253 {
-		return fmt.Errorf("CDN 上游地址过长")
+		return fmt.Errorf("转发地址过长")
 	}
 	if strings.ContainsAny(host, "*/@?#") {
-		return fmt.Errorf("CDN 上游地址不能包含通配符、路径或协议")
+		return fmt.Errorf("转发地址不能包含通配符、路径或协议")
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		return nil

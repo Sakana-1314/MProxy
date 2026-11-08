@@ -4,7 +4,6 @@ import { NButton, NIcon, useThemeVars } from 'naive-ui'
 import { ArrowBackOutline, CompassOutline } from '@vicons/ionicons5'
 
 import AppLogo from '@/components/AppLogo.vue'
-import { siteName } from '@/lib/site'
 
 const router = useRouter()
 const tv = useThemeVars()
@@ -15,10 +14,7 @@ const tv = useThemeVars()
     <div class="panel">
       <AppLogo :size="46" :radius="14" />
       <div class="code">404</div>
-      <h1>页面走丢了</h1>
-      <p :style="{ color: tv.textColor3 }">
-        你访问的页面不存在，或已被移动到其他位置。{{ siteName }} 的管理入口仍然正常运行。
-      </p>
+      <h1>页面不存在</h1>
       <div class="actions">
         <n-button type="primary" @click="router.replace('/dashboard')">
           <template #icon>
@@ -70,12 +66,6 @@ h1 {
   margin: 14px 0 8px;
   font-size: 24px;
   letter-spacing: -0.03em;
-}
-
-p {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.7;
 }
 
 .actions {

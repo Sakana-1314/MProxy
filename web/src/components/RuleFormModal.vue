@@ -175,7 +175,7 @@ const upstreamHostRule: FormItemRule = {
   trigger: ['input', 'blur'],
   validator: (_rule, value: string) => {
     if (!value || !value.trim()) {
-      return new Error('请输入 CDN 上游域名')
+      return new Error('请输入转发域名')
     }
     if (value.includes('*')) {
       return new Error('不支持通配符')
@@ -237,7 +237,7 @@ async function save() {
     return
   }
   if (!validPort(form.upstream_port)) {
-    message.warning('请输入 CDN 上游端口')
+    message.warning('请输入转发端口')
     return
   }
   const payload: RuleInput = {
@@ -290,13 +290,13 @@ async function save() {
         <n-input v-model:value="form.name" placeholder="" maxlength="64" />
       </n-form-item>
 
-      <n-form-item label="代理配置" path="match_host">
+      <n-form-item label="访问地址" path="match_host">
         <div class="url-row">
           <n-select
             v-model:value="form.target_scheme"
             :options="targetSchemeOptions"
             class="scheme-select"
-            aria-label="代理配置协议"
+            aria-label="访问协议"
           />
           <n-input
             v-model:value="form.match_host"
@@ -316,19 +316,19 @@ async function save() {
         </div>
       </n-form-item>
 
-      <n-form-item label="CDN 上游" path="upstream_host">
+      <n-form-item label="转发地址" path="upstream_host">
         <div class="url-row">
           <n-select
             v-model:value="form.upstream_scheme"
             :options="upstreamSchemeOptions"
             class="scheme-select"
-            aria-label="CDN 协议"
+            aria-label="转发协议"
           />
           <n-input
             v-model:value="form.upstream_host"
             placeholder=""
             class="host-input"
-            aria-label="CDN 上游域名"
+            aria-label="转发域名"
           />
           <n-input-number
             v-model:value="form.upstream_port"
@@ -337,7 +337,7 @@ async function save() {
             :precision="0"
             :show-button="false"
             class="port-input"
-            aria-label="CDN 上游端口"
+            aria-label="转发端口"
           />
         </div>
       </n-form-item>

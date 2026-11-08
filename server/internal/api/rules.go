@@ -71,7 +71,7 @@ func (a *API) createRule(c *gin.Context) {
 	}
 	if err := a.store.CreateRule(&rule); err != nil {
 		if errors.Is(err, store.ErrDuplicate) {
-			fail(c, http.StatusConflict, "相同代理配置、Host 和端口的规则已存在")
+			fail(c, http.StatusConflict, "相同访问地址的规则已存在")
 			return
 		}
 		a.logger.Printf("[api] 创建规则失败: %v", err)
@@ -116,7 +116,7 @@ func (a *API) updateRule(c *gin.Context) {
 	}
 	if err := a.store.UpdateRule(&rule); err != nil {
 		if errors.Is(err, store.ErrDuplicate) {
-			fail(c, http.StatusConflict, "相同代理配置、Host 和端口的规则已存在")
+			fail(c, http.StatusConflict, "相同访问地址的规则已存在")
 			return
 		}
 		if errors.Is(err, store.ErrNotFound) {
@@ -201,24 +201,24 @@ func validateRule(rule store.Rule) string {
 	switch rule.TargetScheme {
 	case store.SchemeHTTP, store.SchemeHTTPS, store.TargetSchemeBoth:
 	default:
-		return "代理配置仅支持 HTTP、HTTPS 或兼容"
+		return "访问协议仅支持 HTTP、HTTPS 或兼容"
 	}
 	if err := proxy.ValidateTargetHost(rule.MatchHost); err != nil {
-		return "目标 Host 无效：" + err.Error()
+		return "目标地址无效：" + err.Error()
 	}
 	if rule.MatchPort < 1 || rule.MatchPort > 65535 {
 		return "目标端口需在 1-65535 之间"
 	}
 	if err := proxy.ValidateUpstreamHost(rule.UpstreamHost); err != nil {
-		return "CDN 上游地址无效：" + err.Error()
+		return "转发地址无效：" + err.Error()
 	}
 	switch rule.UpstreamScheme {
 	case store.SchemeHTTP, store.SchemeHTTPS, store.UpstreamSchemeFollow:
 	default:
-		return "CDN 协议仅支持 HTTP、HTTPS 或跟随"
+		return "转发协议仅支持 HTTP、HTTPS 或跟随"
 	}
 	if rule.UpstreamPort < 1 || rule.UpstreamPort > 65535 {
-		return "上游端口需在 1-65535 之间"
+		return "转发端口需在 1-65535 之间"
 	}
 	if len(rule.Remark) > 500 {
 		return "备注不能超过 500 个字符"

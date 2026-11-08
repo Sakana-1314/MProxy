@@ -19,7 +19,7 @@ import { CopyOutline, RefreshOutline } from '@vicons/ionicons5'
 
 import { api } from '@/api'
 import type { ProxyUser, UserInput } from '@/api/types'
-import { endOfDaySeconds, formatBytes, formatQuota } from '@/lib/format'
+import { endOfDaySeconds, formatQuota } from '@/lib/format'
 
 const props = defineProps<{
   show: boolean
@@ -171,11 +171,6 @@ async function save() {
     saving.value = false
   }
 }
-
-const quotaPreview = () => {
-  const bytes = Math.round(Number(form.quotaGB ?? 0) * 1024 ** 3)
-  return bytes > 0 ? `初始 ${formatBytes(bytes)}` : '不限流量'
-}
 </script>
 
 <template>
@@ -187,10 +182,6 @@ const quotaPreview = () => {
     style="width: 640px; max-width: calc(100vw - 32px)"
     @update:show="emit('update:show', $event)"
   >
-    <n-alert type="info" :bordered="false" style="margin-bottom: 18px">
-      代理账号使用 HTTP Proxy-Authorization（Basic）认证。流量按连接上下行字节累计；配额永久有效且只增不减。
-    </n-alert>
-
     <n-form ref="formRef" :model="form" :rules="formRules" label-placement="top">
       <div class="form-grid">
         <n-form-item label="用户名" path="username" class="span-2">
@@ -234,7 +225,7 @@ const quotaPreview = () => {
           </n-input>
         </n-form-item>
 
-        <n-form-item v-if="!isEdit" label="初始配额（GB，永久有效）" path="quotaGB">
+        <n-form-item v-if="!isEdit" label="初始配额（GB，0 为不限）" path="quotaGB">
           <n-input-number
             v-model:value="form.quotaGB"
             :min="0"
@@ -243,9 +234,6 @@ const quotaPreview = () => {
           >
             <template #suffix>GB</template>
           </n-input-number>
-          <template #feedback>
-            <span class="field-hint">0 表示不限；后续只能增加（{{ quotaPreview() }}）</span>
-          </template>
         </n-form-item>
 
         <n-form-item label="账号有效期">
@@ -256,13 +244,10 @@ const quotaPreview = () => {
             placeholder="永久有效"
             style="width: 100%"
           />
-          <template #feedback>
-            <span class="field-hint">选择日期后，到期日 23:59:59 失效</span>
-          </template>
         </n-form-item>
 
         <n-alert v-if="isEdit" type="default" :bordered="false" class="span-2 quota-note">
-          当前永久配额：{{ formatQuota(user?.quota_bytes ?? 0) }}。配额不能减少或重置，请回到用户列表使用「增加配额」操作。
+          当前永久配额：{{ formatQuota(user?.quota_bytes ?? 0) }}。配额只能增加，不能减少或重置。
         </n-alert>
 
         <n-form-item label="备注" class="span-2">
@@ -272,14 +257,13 @@ const quotaPreview = () => {
             :autosize="{ minRows: 2, maxRows: 3 }"
             maxlength="200"
             show-count
-            placeholder="可选，例如：测试账号 / 某团队专用"
+            placeholder=""
           />
         </n-form-item>
 
         <n-form-item label="启用账号" class="span-2">
           <div class="switch-line">
             <n-switch v-model:value="form.enabled" />
-            <span class="field-hint">关闭后该账号无法建立新的代理连接</span>
           </div>
         </n-form-item>
       </div>
@@ -323,12 +307,6 @@ const quotaPreview = () => {
   display: flex;
   align-items: center;
   gap: 10px;
-}
-
-.field-hint {
-  font-size: 11.5px;
-  opacity: 0.62;
-  line-height: 1.5;
 }
 
 .modal-footer {

@@ -11,13 +11,10 @@ import {
   useThemeVars,
 } from 'naive-ui'
 import {
-  CloudOutline,
-  GitNetworkOutline,
   LockClosedOutline,
   MoonOutline,
   PersonOutline,
   ShieldCheckmarkOutline,
-  SpeedometerOutline,
   SunnyOutline,
 } from '@vicons/ionicons5'
 
@@ -36,13 +33,6 @@ const password = ref('')
 const loading = ref(false)
 const error = ref('')
 const changed = route.query.changed === '1'
-
-const features = [
-  { icon: GitNetworkOutline, title: '精确目标白名单', text: 'Host 与端口精确匹配，协议可选 HTTP / HTTPS / 兼容' },
-  { icon: ShieldCheckmarkOutline, title: 'TLS 终结与重加密', text: '客户端关闭校验接入，请求 CDN 时强制替换 Host' },
-  { icon: SpeedometerOutline, title: '流量与配额', text: '按账号累计上下行流量，永久配额只增不减' },
-  { icon: CloudOutline, title: '分区域解析', text: '腾讯云 DoH 解析上游 IP，持久化后轮询分发' },
-]
 
 async function submit() {
   if (loading.value) {
@@ -86,24 +76,7 @@ async function submit() {
       </div>
 
       <div class="hero">
-        <div class="eyebrow">REVERSE PROXY → FORWARD PROXY</div>
-        <h1>把 CDN 反向代理<br />变成受控的正向代理入口</h1>
-        <p class="hero-text">
-          统一管理精确目标 URL、CDN 上游与永久配额。客户端只需配置一个标准 HTTP
-          代理地址。
-        </p>
-      </div>
-
-      <div class="feature-grid">
-        <div v-for="item in features" :key="item.title" class="feature">
-          <div class="feature-icon">
-            <n-icon :size="18"><component :is="item.icon" /></n-icon>
-          </div>
-          <div>
-            <div class="feature-title">{{ item.title }}</div>
-            <div class="feature-text">{{ item.text }}</div>
-          </div>
-        </div>
+        <h1>安全接入，专注使用</h1>
       </div>
 
       <svg class="network-art" viewBox="0 0 560 220" fill="none" aria-hidden="true">
@@ -162,7 +135,6 @@ async function submit() {
 
         <div class="form-heading">
           <h2>欢迎回来</h2>
-          <p :style="{ color: tv.textColor3 }">登录管理控制台，管理转发规则与代理账号。</p>
         </div>
 
         <n-alert v-if="changed" type="success" :bordered="false" style="margin-bottom: 14px">
@@ -212,10 +184,6 @@ async function submit() {
             登录控制台
           </n-button>
         </n-form>
-
-        <div class="login-foot" :style="{ color: tv.textColor3 }">
-          首次启动的初始账号见服务端启动日志，登录后请立即修改密码。
-        </div>
       </div>
     </section>
   </div>
@@ -295,69 +263,12 @@ async function submit() {
   max-width: 570px;
 }
 
-.eyebrow {
-  font-size: 10.5px;
-  letter-spacing: 0.18em;
-  font-weight: 600;
-  color: #c7d2fe;
-  opacity: 0.85;
-}
-
 .hero h1 {
-  margin: 16px 0 18px;
+  margin: 0;
   font-size: clamp(30px, 3.4vw, 46px);
   line-height: 1.18;
   letter-spacing: -0.035em;
   font-weight: 680;
-}
-
-.hero-text {
-  margin: 0;
-  font-size: 14.5px;
-  line-height: 1.75;
-  color: rgba(226, 232, 240, 0.74);
-  max-width: 500px;
-}
-
-.feature-grid {
-  position: relative;
-  z-index: 2;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px 26px;
-  margin-top: 34px;
-  max-width: 640px;
-}
-
-.feature {
-  display: flex;
-  gap: 11px;
-  align-items: flex-start;
-}
-
-.feature-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  color: #c7d2fe;
-}
-
-.feature-title {
-  font-size: 12.5px;
-  font-weight: 600;
-}
-
-.feature-text {
-  font-size: 11.5px;
-  line-height: 1.55;
-  color: rgba(226, 232, 240, 0.55);
-  margin-top: 2px;
 }
 
 .network-art {
@@ -422,6 +333,10 @@ async function submit() {
   margin-bottom: 34px;
 }
 
+.form-heading {
+  margin-bottom: 26px;
+}
+
 .form-heading h2 {
   margin: 0;
   font-size: 27px;
@@ -429,23 +344,10 @@ async function submit() {
   font-weight: 680;
 }
 
-.form-heading p {
-  margin: 7px 0 26px;
-  font-size: 13px;
-  line-height: 1.6;
-}
-
 .login-button {
   margin-top: 8px;
   height: 44px;
   font-weight: 600;
-}
-
-.login-foot {
-  margin-top: 22px;
-  font-size: 11.5px;
-  line-height: 1.65;
-  text-align: center;
 }
 
 @media (max-width: 980px) {
