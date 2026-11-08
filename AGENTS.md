@@ -9,10 +9,19 @@
 ## 仓库与分支
 
 - 远程仓库：`https://github.com/Sakana-1314/MProxy`（public），默认分支 `main`。
-- 工作分支固定为 `dev`；不要在 `main` 上开发。
+- 工作分支固定为 `dev`，所有改动以 `dev` 为目标分支；不要在 `main` 上开发。
 - `main` 只保留一行 README：「开发中，敬请期待」，与 `dev` 历史独立，不要把占位内容合并进 `dev`。
-- 提交身份固定为 `Sakana <admin@yangrucheng.top>`，使用 SSH 签名，保持 GitHub 显示 Verified。
-- 提交信息中文，格式 `type(scope): 描述`；分支前缀 `feat/`、`fix/`、`refactor/`、`docs/`、`chore/`。
+- 禁止直接向 `dev` 推送；`dev` 只接受 PR 合并。
+
+## 协作与提交
+
+- 作者与提交者统一使用 `Sakana <admin@yangrucheng.top>`。
+- 所有提交必须用 SSH 私钥签名（`gpg.format=ssh`、`user.signingkey=~/.ssh/private.key`、`commit.gpgsign=true`），保持 GitHub 显示 Verified。
+- 必须走 PR：从 `dev` 拉出分支 → 提交 → `gh pr create` → 等「持续集成」全绿 → `gh pr checks` 全绿后 `gh pr merge --squash` 并删除 head 分支。
+- 禁止本地 merge 后直推 `dev`（会把 PR 关成 CLOSED 而非 MERGED）。
+- 分支前缀：`feat/`、`fix/`、`refactor/`、`docs/`、`chore/`。
+- 提交信息中文，格式 `type(scope): 描述`。
+- 工作流 `name` 用中文（专有名词除外）；严禁硬编码 IP、密钥与内部域名，一律使用 secrets 或占位符。
 
 ## 目录
 
