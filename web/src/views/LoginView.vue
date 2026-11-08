@@ -11,10 +11,14 @@ import {
   useThemeVars,
 } from 'naive-ui'
 import {
+  GitNetworkOutline,
   LockClosedOutline,
   MoonOutline,
+  PeopleOutline,
   PersonOutline,
+  PulseOutline,
   ShieldCheckmarkOutline,
+  SpeedometerOutline,
   SunnyOutline,
 } from '@vicons/ionicons5'
 
@@ -33,6 +37,13 @@ const password = ref('')
 const loading = ref(false)
 const error = ref('')
 const changed = route.query.changed === '1'
+
+const features = [
+  { icon: GitNetworkOutline, title: '精确放行', text: '只放行配置过的地址，其余一律拒绝' },
+  { icon: SpeedometerOutline, title: '流量与配额', text: '按账号累计用量，配额永久有效' },
+  { icon: PeopleOutline, title: '账号管理', text: '随时启停账号，可设置有效期' },
+  { icon: PulseOutline, title: '用量概览', text: '请求与流量趋势一目了然' },
+]
 
 async function submit() {
   if (loading.value) {
@@ -76,7 +87,21 @@ async function submit() {
       </div>
 
       <div class="hero">
-        <h1>安全接入，专注使用</h1>
+        <div class="eyebrow">ADMIN CONSOLE</div>
+        <h1>统一管理转发规则<br />与代理账号</h1>
+        <p class="hero-text">精确放行每一个地址，流量与配额清晰可控。</p>
+      </div>
+
+      <div class="feature-grid">
+        <div v-for="item in features" :key="item.title" class="feature">
+          <div class="feature-icon">
+            <n-icon :size="18"><component :is="item.icon" /></n-icon>
+          </div>
+          <div>
+            <div class="feature-title">{{ item.title }}</div>
+            <div class="feature-text">{{ item.text }}</div>
+          </div>
+        </div>
       </div>
 
       <svg class="network-art" viewBox="0 0 560 220" fill="none" aria-hidden="true">
@@ -263,12 +288,69 @@ async function submit() {
   max-width: 570px;
 }
 
+.eyebrow {
+  font-size: 10.5px;
+  letter-spacing: 0.18em;
+  font-weight: 600;
+  color: #c7d2fe;
+  opacity: 0.85;
+}
+
 .hero h1 {
-  margin: 0;
+  margin: 16px 0 14px;
   font-size: clamp(30px, 3.4vw, 46px);
   line-height: 1.18;
   letter-spacing: -0.035em;
   font-weight: 680;
+}
+
+.hero-text {
+  margin: 0;
+  font-size: 14.5px;
+  line-height: 1.75;
+  color: rgba(226, 232, 240, 0.74);
+  max-width: 500px;
+}
+
+.feature-grid {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 26px;
+  margin-top: 30px;
+  max-width: 640px;
+}
+
+.feature {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+}
+
+.feature-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: #c7d2fe;
+}
+
+.feature-title {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.feature-text {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: rgba(226, 232, 240, 0.55);
+  margin-top: 2px;
 }
 
 .network-art {
