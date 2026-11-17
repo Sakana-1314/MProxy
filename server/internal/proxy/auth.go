@@ -14,7 +14,10 @@ import (
 	"cdnproxy/internal/store"
 )
 
-const authCacheTTL = 10 * time.Minute
+const (
+	authCacheTTL = 10 * time.Minute
+	userCacheTTL = 2 * time.Second
+)
 
 type authResult struct {
 	User     *store.ProxyUser
@@ -41,21 +44,28 @@ func (s *Server) authenticate(r *http.Request) authResult {
 		}
 	}
 
-	user, err := s.store.GetUserByUsername(username)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return authResult{
-				Username: username,
-				Status:   http.StatusProxyAuthRequired,
-				Message:  "invalid proxy credentials",
+	user, ok := s.userSnapshots.Get(username)
+	if !ok {
+		fetched, err := s.store.GetUserByUsername(username)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return authResult{
+					Username: username,
+					Status:   http.StatusProxyAuthRequired,
+					Message:  "invalid proxy credentials",
+				}
 			}
+			s.logger.Printf("[proxy] 查询代理用户失败: %v", err)
+			return authResult{Username: username, Status: http.StatusInternalServerError, Message: "internal error"}
 		}
-		s.logger.Printf("[proxy] 查询代理用户失败: %v", err)
-		return authResult{Username: username, Status: http.StatusInternalServerError, Message: "internal error"}
+		s.userSnapshots.Put(username, *fetched)
+		user = *fetched
 	}
 
 	// bcrypt is intentionally slow, so a successful credential pair is cached
-	// briefly. Cache entries are cleared whenever an account is modified.
+	// briefly. The user snapshot has its own short TTL so the proxy hot path
+	// does not query SQLite on every connection while quota/enabled changes
+	// still take effect quickly.
 	if !s.auth.Valid(username, password) {
 		if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
 			return authResult{
@@ -80,7 +90,7 @@ func (s *Server) authenticate(r *http.Request) authResult {
 	if user.QuotaBytes > 0 && used >= user.QuotaBytes {
 		return authResult{Username: user.Username, Status: http.StatusForbidden, Message: "traffic quota exceeded"}
 	}
-	return authResult{User: user, Username: user.Username}
+	return authResult{User: &user, Username: user.Username}
 }
 
 func proxyCredentials(r *http.Request) (username, password string, ok bool) {
@@ -151,6 +161,60 @@ func (c *credentialCache) Put(username, password string) {
 }
 
 func (c *credentialCache) Clear() {
+	c.mu.Lock()
+	c.entries = nil
+	c.mu.Unlock()
+}
+
+type userSnapshot struct {
+	user      store.ProxyUser
+	expiresAt time.Time
+}
+
+// userCache keeps a very short-lived copy of the user row. The proxy path reads
+// it on every connection; a 2s TTL removes the per-connection SQLite query
+// while keeping quota/expiry drift smaller than the traffic flush interval.
+type userCache struct {
+	mu      sync.Mutex
+	entries map[string]userSnapshot
+}
+
+func userCacheKey(username string) string {
+	return strings.ToLower(strings.TrimSpace(username))
+}
+
+func (c *userCache) Get(username string) (store.ProxyUser, bool) {
+	key := userCacheKey(username)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.entries[key]
+	if !ok {
+		return store.ProxyUser{}, false
+	}
+	if time.Now().After(entry.expiresAt) {
+		delete(c.entries, key)
+		return store.ProxyUser{}, false
+	}
+	return entry.user, true
+}
+
+func (c *userCache) Put(username string, user store.ProxyUser) {
+	key := userCacheKey(username)
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = make(map[string]userSnapshot)
+	}
+	for existing, entry := range c.entries {
+		if now.After(entry.expiresAt) {
+			delete(c.entries, existing)
+		}
+	}
+	c.entries[key] = userSnapshot{user: user, expiresAt: now.Add(userCacheTTL)}
+}
+
+func (c *userCache) Clear() {
 	c.mu.Lock()
 	c.entries = nil
 	c.mu.Unlock()

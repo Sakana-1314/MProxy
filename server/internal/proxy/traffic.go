@@ -15,6 +15,10 @@ type trafficStats struct {
 	logger   *stdlog.Logger
 	interval time.Duration
 
+	// onFlushed runs after a successful database flush. The user snapshot cache
+	// uses it to pick up updated total_bytes before the next auth check.
+	onFlushed func()
+
 	mu     sync.Mutex
 	hourly map[int64]*trafficCounter
 	users  map[int64]int64
@@ -29,7 +33,7 @@ type trafficCounter struct {
 	bytes    int64
 }
 
-func newTrafficStats(st *store.Store, logger *stdlog.Logger, interval time.Duration) *trafficStats {
+func newTrafficStats(st *store.Store, logger *stdlog.Logger, interval time.Duration, onFlushed func()) *trafficStats {
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
@@ -37,13 +41,14 @@ func newTrafficStats(st *store.Store, logger *stdlog.Logger, interval time.Durat
 		logger = stdlog.Default()
 	}
 	stats := &trafficStats{
-		store:    st,
-		logger:   logger,
-		interval: interval,
-		hourly:   make(map[int64]*trafficCounter),
-		users:    make(map[int64]int64),
-		stop:     make(chan struct{}),
-		done:     make(chan struct{}),
+		store:     st,
+		logger:    logger,
+		interval:  interval,
+		onFlushed: onFlushed,
+		hourly:    make(map[int64]*trafficCounter),
+		users:     make(map[int64]int64),
+		stop:      make(chan struct{}),
+		done:      make(chan struct{}),
 	}
 	go stats.run()
 	return stats
@@ -124,6 +129,10 @@ func (s *trafficStats) flush() {
 			s.users[id] += bytes
 		}
 		s.mu.Unlock()
+		return
+	}
+	if s.onFlushed != nil {
+		s.onFlushed()
 	}
 }
 

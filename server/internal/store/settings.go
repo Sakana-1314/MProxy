@@ -14,7 +14,7 @@ const (
 // GetSetting returns one setting value.
 func (s *Store) GetSetting(key string) (string, bool, error) {
 	var value string
-	err := s.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&value)
+	err := s.read.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
