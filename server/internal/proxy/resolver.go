@@ -83,17 +83,20 @@ func upstreamSchemes(rule store.Rule) []string {
 
 // ResolvedIP is one A record with the measured TCP/TLS latency.
 type ResolvedIP struct {
+	ID        int64  `json:"id,omitempty"`
 	IP        string `json:"ip"`
 	LatencyMS int64  `json:"latency_ms"`
 	Reachable bool   `json:"reachable"`
+	Disabled  bool   `json:"disabled"`
 }
 
 // RegionStat is one regional DoH query result.
 type RegionStat struct {
-	Subnet    string `json:"subnet"`
-	LatencyMS int64  `json:"latency_ms"`
-	IPCount   int    `json:"ip_count"`
-	Error     string `json:"error,omitempty"`
+	Subnet    string   `json:"subnet"`
+	LatencyMS int64    `json:"latency_ms"`
+	IPCount   int      `json:"ip_count"`
+	Error     string   `json:"error,omitempty"`
+	IPs       []string `json:"ips"`
 }
 
 // ResolutionReport is the cached resolution returned by the rule test API.
@@ -162,11 +165,17 @@ func newUpstreamResolver(opts resolverOptions) *upstreamResolver {
 		subnets = doh.DefaultRegionSubnets
 	}
 	clean := make([]string, 0, len(subnets))
+	seenSubnets := make(map[string]struct{}, len(subnets))
 	for _, subnet := range subnets {
 		subnet = strings.TrimSpace(subnet)
-		if subnet != "" {
-			clean = append(clean, subnet)
+		if subnet == "" {
+			continue
 		}
+		if _, exists := seenSubnets[subnet]; exists {
+			continue
+		}
+		seenSubnets[subnet] = struct{}{}
+		clean = append(clean, subnet)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &upstreamResolver{
@@ -240,6 +249,42 @@ func (r *upstreamResolver) Report(ctx context.Context, target upstreamTarget) (*
 	return r.resolveShared(ctx, target)
 }
 
+// Refresh resolves a target again and replaces the cached pool, regardless of
+// the current TTL. The management UI uses it for an explicit re-resolution.
+func (r *upstreamResolver) Refresh(ctx context.Context, target upstreamTarget) (*ResolutionReport, error) {
+	return r.resolveShared(ctx, target)
+}
+
+// SetIPEnabled toggles one IP in the pool. The database is authoritative so the
+// choice survives refreshes and restarts; the cached report is updated in place
+// with copy-on-write to avoid racing readers.
+func (r *upstreamResolver) SetIPEnabled(target upstreamTarget, ip string, enabled bool) error {
+	if r.store == nil {
+		return errors.New("upstream store is not configured")
+	}
+	if err := r.store.SetUpstreamIPEnabled(target.Scheme, target.Host, target.Port, ip, enabled); err != nil {
+		return err
+	}
+	key := target.key()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry := r.cache[key]
+	if entry == nil {
+		return nil
+	}
+	report := entry.report
+	ips := make([]ResolvedIP, len(report.IPs))
+	copy(ips, report.IPs)
+	for index := range ips {
+		if ips[index].IP == ip {
+			ips[index].Disabled = !enabled
+		}
+	}
+	report.IPs = ips
+	entry.report = report
+	return nil
+}
+
 func (r *upstreamResolver) resolveForDial(ctx context.Context, target upstreamTarget) (*ResolutionReport, error) {
 	r.loadPersisted(target)
 	key := target.key()
@@ -278,6 +323,9 @@ func (r *upstreamResolver) Dial(ctx context.Context, target upstreamTarget) (net
 	reachable := make([]ResolvedIP, 0, len(report.IPs))
 	fallback := make([]ResolvedIP, 0, len(report.IPs))
 	for _, item := range report.IPs {
+		if item.Disabled {
+			continue
+		}
 		if item.Reachable {
 			reachable = append(reachable, item)
 		} else {
@@ -365,19 +413,36 @@ func (r *upstreamResolver) resolveShared(ctx context.Context, target upstreamTar
 			return nil, ctx.Err()
 		}
 	}
+	previous := ResolutionReport{}
+	hasPrevious := false
+	if entry := r.cache[key]; entry != nil && len(entry.report.IPs) > 0 {
+		// SetIPEnabled replaces the slice instead of mutating it, so copying the
+		// struct here gives us a race-free snapshot of the last usable pool.
+		previous = entry.report
+		hasPrevious = true
+	}
 	call := &resolveCall{done: make(chan struct{})}
 	r.inflight[key] = call
 	r.mu.Unlock()
 
 	report, err := r.doResolve(ctx, target)
+	if report != nil && report.Error == "" && len(report.IPs) > 0 {
+		r.persist(target, report)
+		r.applyEnabledState(target, report)
+	}
+	if report != nil && report.Error != "" && len(report.IPs) == 0 && hasPrevious {
+		// A failed refresh must not erase the last usable pool: keep serving it
+		// while surfacing the error and retrying after the short failure TTL.
+		merged := previous
+		merged.Error = report.Error
+		merged.TTLSeconds = int(dohFailureTTL / time.Second)
+		r.applyEnabledState(target, &merged)
+		report = &merged
+	}
 	if report != nil {
 		call.report = *report
 	}
 	call.err = err
-
-	if report != nil && report.Error == "" && len(report.IPs) > 0 {
-		r.persist(target, report)
-	}
 
 	r.mu.Lock()
 	delete(r.inflight, key)
@@ -427,8 +492,10 @@ func (r *upstreamResolver) doResolve(ctx context.Context, target upstreamTarget)
 			stat.Error = result.err.Error()
 			report.RegionFailed++
 		} else {
+			stat.IPs = dedupeStrings(result.ips)
+			stat.IPCount = len(stat.IPs)
 			report.RegionOK++
-			collected = append(collected, result.ips...)
+			collected = append(collected, stat.IPs...)
 			if result.ttl > maxTTL {
 				maxTTL = result.ttl
 			}
@@ -577,6 +644,9 @@ func (r *upstreamResolver) probeAll(ctx context.Context, target upstreamTarget, 
 
 func sortResolvedIPs(ips []ResolvedIP) {
 	sort.SliceStable(ips, func(i, j int) bool {
+		if ips[i].Disabled != ips[j].Disabled {
+			return !ips[i].Disabled
+		}
 		if ips[i].Reachable != ips[j].Reachable {
 			return ips[i].Reachable
 		}
@@ -639,9 +709,26 @@ func (r *upstreamResolver) loadPersisted(target upstreamTarget) {
 	}
 	report.IPs = make([]ResolvedIP, 0, len(saved.IPs))
 	for _, item := range saved.IPs {
-		report.IPs = append(report.IPs, ResolvedIP{IP: item.IP, LatencyMS: item.LatencyMS, Reachable: item.Reachable})
+		report.IPs = append(report.IPs, ResolvedIP{
+			ID:        item.ID,
+			IP:        item.IP,
+			LatencyMS: item.LatencyMS,
+			Reachable: item.Reachable,
+			Disabled:  !item.Enabled,
+		})
 	}
 	sortResolvedIPs(report.IPs)
+	report.Regions = make([]RegionStat, 0, len(saved.Regions))
+	for _, region := range saved.Regions {
+		ips := append([]string{}, region.IPs...)
+		report.Regions = append(report.Regions, RegionStat{
+			Subnet:    region.Subnet,
+			LatencyMS: region.LatencyMS,
+			IPCount:   region.IPCount,
+			Error:     region.Error,
+			IPs:       ips,
+		})
+	}
 	if report.TTLSeconds <= 0 {
 		report.TTLSeconds = 300
 	}
@@ -673,17 +760,55 @@ func (r *upstreamResolver) persist(target upstreamTarget, report *ResolutionRepo
 		RegionFailed: report.RegionFailed,
 		Error:        report.Error,
 		IPs:          make([]store.UpstreamIP, 0, len(report.IPs)),
+		Regions:      make([]store.UpstreamRegion, 0, len(report.Regions)),
 	}
 	for _, item := range report.IPs {
 		saved.IPs = append(saved.IPs, store.UpstreamIP{
 			IP:        item.IP,
 			LatencyMS: item.LatencyMS,
 			Reachable: item.Reachable,
+			Enabled:   !item.Disabled,
+		})
+	}
+	for _, region := range report.Regions {
+		saved.Regions = append(saved.Regions, store.UpstreamRegion{
+			Subnet:    region.Subnet,
+			LatencyMS: region.LatencyMS,
+			IPCount:   region.IPCount,
+			Error:     region.Error,
+			IPs:       region.IPs,
 		})
 	}
 	if err := r.store.SaveUpstreamResolution(saved); err != nil {
 		r.logger.Printf("[doh] 持久化解析结果失败 %s: %v", target.Host, err)
 	}
+}
+
+// applyEnabledState re-applies the admin's enabled choices after a fresh
+// resolution. The database is authoritative because a concurrent toggle may
+// have happened while DoH and the probes were running.
+func (r *upstreamResolver) applyEnabledState(target upstreamTarget, report *ResolutionReport) {
+	if r.store == nil {
+		return
+	}
+	saved, err := r.store.LoadUpstreamResolution(target.Scheme, target.Host, target.Port)
+	if err != nil {
+		r.logger.Printf("[doh] 读取 IP 启用状态失败 %s: %v", target.Host, err)
+		return
+	}
+	if saved == nil {
+		return
+	}
+	enabled := make(map[string]bool, len(saved.IPs))
+	for _, item := range saved.IPs {
+		enabled[item.IP] = item.Enabled
+	}
+	for index := range report.IPs {
+		if value, ok := enabled[report.IPs[index].IP]; ok {
+			report.IPs[index].Disabled = !value
+		}
+	}
+	sortResolvedIPs(report.IPs)
 }
 
 func (r *upstreamResolver) probeOne(ctx context.Context, target upstreamTarget, ip string) (int64, bool) {

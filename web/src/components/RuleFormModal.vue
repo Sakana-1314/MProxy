@@ -40,7 +40,6 @@ interface RuleFormState {
   upstream_scheme: RuleUpstreamScheme
   upstream_host: string
   upstream_port: number | null
-  enabled: boolean
   remark: string
 }
 
@@ -73,7 +72,6 @@ function createDefaults(): RuleFormState {
     upstream_scheme: 'https',
     upstream_host: '',
     upstream_port: 443,
-    enabled: true,
     remark: '',
   }
 }
@@ -89,7 +87,6 @@ function hydrate() {
         upstream_scheme: source.upstream_scheme,
         upstream_host: source.upstream_host,
         upstream_port: source.upstream_port,
-        enabled: source.enabled,
         remark: source.remark,
       }
     : createDefaults()
@@ -248,7 +245,6 @@ async function save() {
     upstream_scheme: form.upstream_scheme,
     upstream_host: form.upstream_host.trim(),
     upstream_port: form.upstream_port,
-    enabled: form.enabled,
     remark: form.remark.trim(),
   }
   saving.value = true
@@ -350,10 +346,6 @@ async function save() {
           maxlength="500"
           placeholder=""
         />
-      </n-form-item>
-
-      <n-form-item label="启用规则">
-        <n-switch v-model:value="form.enabled" />
       </n-form-item>
     </n-form>
 

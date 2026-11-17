@@ -1,15 +1,22 @@
 package api
 
 import (
+	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"cdnproxy/internal/proxy"
 	"cdnproxy/internal/store"
 )
+
+// Rule IP resolution errors are sanitised: the management UI shows that a
+// query failed without exposing the resolver's implementation details.
+const ruleIPsFailureMessage = "解析失败，请稍后重试"
 
 type rulePayload struct {
 	Name           string `json:"name"`
@@ -178,6 +185,137 @@ func (a *API) deleteRule(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+type ruleIPRegion struct {
+	Subnet    string   `json:"subnet"`
+	LatencyMS int64    `json:"latency_ms"`
+	IPCount   int      `json:"ip_count"`
+	Failed    bool     `json:"failed"`
+	IPs       []string `json:"ips"`
+}
+
+type ruleIPsResponse struct {
+	Scheme       string             `json:"scheme"`
+	Host         string             `json:"host"`
+	Port         int                `json:"port"`
+	DurationMS   int64              `json:"duration_ms"`
+	ResolvedAt   int64              `json:"resolved_at"`
+	TTLSeconds   int                `json:"ttl_seconds"`
+	RegionOK     int                `json:"region_ok"`
+	RegionFailed int                `json:"region_failed"`
+	Error        string             `json:"error,omitempty"`
+	IPs          []proxy.ResolvedIP `json:"ips"`
+	Regions      []ruleIPRegion     `json:"regions"`
+}
+
+func (a *API) getRuleIPs(c *gin.Context) {
+	rule, ok := a.loadRule(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	report, err := a.proxy.RuleResolution(ctx, *rule)
+	a.writeRuleIPs(c, report, err)
+}
+
+func (a *API) refreshRuleIPs(c *gin.Context) {
+	rule, ok := a.loadRule(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
+	defer cancel()
+	report, err := a.proxy.RefreshRuleResolution(ctx, *rule)
+	a.writeRuleIPs(c, report, err)
+}
+
+func (a *API) setRuleIPEnabled(c *gin.Context) {
+	rule, ok := a.loadRule(c)
+	if !ok {
+		return
+	}
+	var payload struct {
+		IP      string `json:"ip"`
+		Enabled *bool  `json:"enabled"`
+	}
+	if err := c.ShouldBindJSON(&payload); err != nil || payload.Enabled == nil {
+		fail(c, http.StatusBadRequest, "请求格式不正确")
+		return
+	}
+	ip := strings.TrimSpace(payload.IP)
+	if net.ParseIP(ip) == nil {
+		fail(c, http.StatusBadRequest, "IP 地址无效")
+		return
+	}
+	if err := a.proxy.SetRuleIPEnabled(*rule, ip, *payload.Enabled); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			fail(c, http.StatusNotFound, "IP 不存在")
+			return
+		}
+		a.logger.Printf("[api] 更新 IP 状态失败: %v", err)
+		fail(c, http.StatusInternalServerError, "更新 IP 状态失败")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ip": ip, "enabled": *payload.Enabled})
+}
+
+func (a *API) loadRule(c *gin.Context) (*store.Rule, bool) {
+	id, ok := parseID(c)
+	if !ok {
+		return nil, false
+	}
+	rule, err := a.store.GetRule(id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			fail(c, http.StatusNotFound, "规则不存在")
+		} else {
+			a.logger.Printf("[api] 查询规则失败: %v", err)
+			fail(c, http.StatusInternalServerError, "查询规则失败")
+		}
+		return nil, false
+	}
+	return rule, true
+}
+
+func (a *API) writeRuleIPs(c *gin.Context, report *proxy.ResolutionReport, err error) {
+	if report == nil {
+		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			a.logger.Printf("[api] 解析规则 IP 失败: %v", err)
+		}
+		fail(c, http.StatusBadGateway, ruleIPsFailureMessage)
+		return
+	}
+	response := ruleIPsResponse{
+		Scheme:       report.Scheme,
+		Host:         report.Host,
+		Port:         report.Port,
+		DurationMS:   report.DurationMS,
+		ResolvedAt:   report.ResolvedAt,
+		TTLSeconds:   report.TTLSeconds,
+		RegionOK:     report.RegionOK,
+		RegionFailed: report.RegionFailed,
+		IPs:          report.IPs,
+		Regions:      make([]ruleIPRegion, 0, len(report.Regions)),
+	}
+	if response.IPs == nil {
+		response.IPs = []proxy.ResolvedIP{}
+	}
+	if report.Error != "" || err != nil {
+		response.Error = ruleIPsFailureMessage
+	}
+	for _, region := range report.Regions {
+		ips := append([]string{}, region.IPs...)
+		response.Regions = append(response.Regions, ruleIPRegion{
+			Subnet:    region.Subnet,
+			LatencyMS: region.LatencyMS,
+			IPCount:   region.IPCount,
+			Failed:    region.Error != "",
+			IPs:       ips,
+		})
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func applyRulePayload(rule *store.Rule, payload rulePayload) {

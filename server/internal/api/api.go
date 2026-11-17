@@ -98,6 +98,9 @@ func (a *API) routes() {
 	protected.GET("/rules/:id", a.getRule)
 	protected.PUT("/rules/:id", a.updateRule)
 	protected.PATCH("/rules/:id/enabled", a.setRuleEnabled)
+	protected.GET("/rules/:id/ips", a.getRuleIPs)
+	protected.POST("/rules/:id/ips/refresh", a.refreshRuleIPs)
+	protected.PATCH("/rules/:id/ips", a.setRuleIPEnabled)
 	protected.DELETE("/rules/:id", a.deleteRule)
 
 	protected.GET("/users", a.listUsers)

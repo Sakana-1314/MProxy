@@ -7,6 +7,7 @@ import type {
   ProxyUser,
   Rule,
   RuleInput,
+  RuleResolution,
   UserInput,
 } from './types'
 
@@ -39,6 +40,14 @@ export const api = {
       request<{ enabled: boolean }>(`/rules/${id}/enabled`, {
         method: 'PATCH',
         body: JSON.stringify({ enabled }),
+      }),
+    ips: (id: number) => request<RuleResolution>(`/rules/${id}/ips`),
+    refreshIps: (id: number) =>
+      request<RuleResolution>(`/rules/${id}/ips/refresh`, { method: 'POST' }),
+    setIpEnabled: (id: number, ip: string, enabled: boolean) =>
+      request<{ ip: string; enabled: boolean }>(`/rules/${id}/ips`, {
+        method: 'PATCH',
+        body: JSON.stringify({ ip, enabled }),
       }),
     remove: (id: number) => request<void>(`/rules/${id}`, { method: 'DELETE' }),
   },

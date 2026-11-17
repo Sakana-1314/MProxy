@@ -20,6 +20,11 @@ import (
 
 func newTestAPI(t *testing.T) (*httptest.Server, *store.Store) {
 	t.Helper()
+	return newTestAPIWithSetup(t, nil)
+}
+
+func newTestAPIWithSetup(t *testing.T, setup func(*store.Store)) (*httptest.Server, *store.Store) {
+	t.Helper()
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "test.db"))
 	if err != nil {
@@ -28,6 +33,9 @@ func newTestAPI(t *testing.T) (*httptest.Server, *store.Store) {
 	t.Cleanup(func() { _ = st.Close() })
 	if _, err := st.SeedAdmin("admin", "admin123"); err != nil {
 		t.Fatalf("seed admin: %v", err)
+	}
+	if setup != nil {
+		setup(st)
 	}
 	proxyServer, err := proxy.New(proxy.Options{
 		Addr:    "127.0.0.1:0",
@@ -356,5 +364,158 @@ func TestRuleProtocolModes(t *testing.T) {
 	})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid upstream scheme status = %d, body=%s", resp.StatusCode, data)
+	}
+}
+
+func TestRuleIPManagementAPI(t *testing.T) {
+	var ruleID, directID int64
+	server, _ := newTestAPIWithSetup(t, func(st *store.Store) {
+		rule := store.Rule{
+			Name:           "ip demo",
+			TargetScheme:   store.SchemeHTTPS,
+			MatchHost:      "ip.example.com",
+			MatchPort:      443,
+			UpstreamHost:   "upstream.example.com",
+			UpstreamPort:   443,
+			UpstreamScheme: store.SchemeHTTPS,
+			Enabled:        true,
+		}
+		store.NormalizeRule(&rule)
+		if err := st.CreateRule(&rule); err != nil {
+			t.Fatalf("seed rule: %v", err)
+		}
+		ruleID = rule.ID
+
+		if err := st.SaveUpstreamResolution(&store.UpstreamResolution{
+			Scheme:     store.SchemeHTTPS,
+			Host:       "upstream.example.com",
+			Port:       443,
+			ResolvedAt: time.Now().Unix(),
+			TTLSeconds: 300,
+			RegionOK:   1,
+			IPs: []store.UpstreamIP{
+				{IP: "203.0.113.21", LatencyMS: 18, Reachable: true, Enabled: true},
+				{IP: "203.0.113.22", LatencyMS: 42, Reachable: true, Enabled: true},
+			},
+			Regions: []store.UpstreamRegion{
+				{Subnet: "1.2.3.0/24", LatencyMS: 11, IPs: []string{"203.0.113.21", "203.0.113.22"}},
+			},
+		}); err != nil {
+			t.Fatalf("seed resolution: %v", err)
+		}
+
+		direct := store.Rule{
+			Name:           "direct",
+			TargetScheme:   store.SchemeHTTPS,
+			MatchHost:      "direct.example.com",
+			MatchPort:      443,
+			UpstreamHost:   "127.0.0.1",
+			UpstreamPort:   1,
+			UpstreamScheme: store.SchemeHTTPS,
+			Enabled:        true,
+		}
+		store.NormalizeRule(&direct)
+		if err := st.CreateRule(&direct); err != nil {
+			t.Fatalf("seed direct rule: %v", err)
+		}
+		directID = direct.ID
+	})
+
+	resp, data := request(t, server, http.MethodPost, "/api/auth/login", "", map[string]string{
+		"username": "admin",
+		"password": "admin123",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("login status = %d, body=%s", resp.StatusCode, data)
+	}
+	var login struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(data, &login); err != nil || login.Token == "" {
+		t.Fatalf("invalid login response: %v %s", err, data)
+	}
+
+	path := "/api/rules/" + strconv.FormatInt(ruleID, 10) + "/ips"
+	resp, data = request(t, server, http.MethodGet, path, login.Token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get rule ips status = %d, body=%s", resp.StatusCode, data)
+	}
+	var pool struct {
+		Host string `json:"host"`
+		IPs  []struct {
+			IP        string `json:"ip"`
+			LatencyMS int64  `json:"latency_ms"`
+			Reachable bool   `json:"reachable"`
+			Disabled  bool   `json:"disabled"`
+		} `json:"ips"`
+		Regions []struct {
+			Subnet string   `json:"subnet"`
+			IPs    []string `json:"ips"`
+			Failed bool     `json:"failed"`
+		} `json:"regions"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(data, &pool); err != nil {
+		t.Fatalf("decode rule ips: %v", err)
+	}
+	if pool.Host != "upstream.example.com" || len(pool.IPs) != 2 || len(pool.Regions) != 1 {
+		t.Fatalf("rule ips = %+v", pool)
+	}
+	if pool.IPs[0].IP != "203.0.113.21" || pool.IPs[0].Disabled {
+		t.Fatalf("first ip = %+v", pool.IPs[0])
+	}
+	if len(pool.Regions[0].IPs) != 2 || pool.Regions[0].Failed {
+		t.Fatalf("region = %+v", pool.Regions[0])
+	}
+	if pool.Error != "" {
+		t.Fatalf("unexpected error = %q", pool.Error)
+	}
+
+	resp, data = request(t, server, http.MethodPatch, path, login.Token, map[string]any{
+		"ip":      "203.0.113.21",
+		"enabled": false,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("disable ip status = %d, body=%s", resp.StatusCode, data)
+	}
+
+	resp, data = request(t, server, http.MethodGet, path, login.Token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get rule ips after disable status = %d, body=%s", resp.StatusCode, data)
+	}
+	if err := json.Unmarshal(data, &pool); err != nil {
+		t.Fatalf("decode rule ips: %v", err)
+	}
+	disabled := map[string]bool{}
+	for _, item := range pool.IPs {
+		disabled[item.IP] = item.Disabled
+	}
+	if !disabled["203.0.113.21"] || disabled["203.0.113.22"] {
+		t.Fatalf("ip enabled state = %+v", disabled)
+	}
+
+	resp, _ = request(t, server, http.MethodPatch, path, login.Token, map[string]any{
+		"ip":      "not-an-ip",
+		"enabled": false,
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid ip status = %d, want 400", resp.StatusCode)
+	}
+
+	resp, _ = request(t, server, http.MethodGet, "/api/rules/999999/ips", login.Token, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown rule status = %d, want 404", resp.StatusCode)
+	}
+
+	// Refreshing an IP-literal upstream skips DoH and is exercised end to end.
+	resp, data = request(t, server, http.MethodPost, "/api/rules/"+strconv.FormatInt(directID, 10)+"/ips/refresh", login.Token, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("refresh rule ips status = %d, body=%s", resp.StatusCode, data)
+	}
+	if err := json.Unmarshal(data, &pool); err != nil {
+		t.Fatalf("decode refreshed ips: %v", err)
+	}
+	if pool.Host != "127.0.0.1" || len(pool.IPs) != 1 || pool.IPs[0].IP != "127.0.0.1" {
+		t.Fatalf("refreshed pool = %+v", pool)
 	}
 }
