@@ -17,6 +17,7 @@ import { api } from '@/api'
 import type { Rule, RuleTargetScheme, RuleUpstreamScheme } from '@/api/types'
 import PageHeader from '@/components/PageHeader.vue'
 import RuleFormModal from '@/components/RuleFormModal.vue'
+import RuleIPsDrawer from '@/components/RuleIPsDrawer.vue'
 
 const message = useMessage()
 
@@ -24,7 +25,9 @@ const loading = ref(false)
 const rules = ref<Rule[]>([])
 const keyword = ref('')
 const showForm = ref(false)
+const showIPs = ref(false)
 const editingRule = ref<Rule | null>(null)
+const detailRule = ref<Rule | null>(null)
 const togglingId = ref<number | null>(null)
 
 const pagination = reactive({
@@ -58,7 +61,7 @@ function rowProps(row: Rule) {
       if (target?.closest('.n-switch')) {
         return
       }
-      openEdit(row)
+      openDetail(row)
     },
   }
 }
@@ -90,7 +93,13 @@ function openCreate() {
   showForm.value = true
 }
 
+function openDetail(rule: Rule) {
+  detailRule.value = rule
+  showIPs.value = true
+}
+
 function openEdit(rule: Rule) {
+  showIPs.value = false
   editingRule.value = rule
   showForm.value = true
 }
@@ -266,6 +275,8 @@ onMounted(load)
       @saved="onSaved"
       @deleted="onSaved"
     />
+
+    <RuleIPsDrawer v-model:show="showIPs" :rule="detailRule" @edit="openEdit" />
   </div>
 </template>
 

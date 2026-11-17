@@ -87,6 +87,17 @@ func TestResolverRegionalDoHAndLatency(t *testing.T) {
 	if report.RegionOK != 2 || report.RegionFailed != 0 {
 		t.Fatalf("regions = %+v", report)
 	}
+	if len(report.Regions) != 2 {
+		t.Fatalf("region stats = %+v", report.Regions)
+	}
+	if report.Regions[0].Subnet != "1.2.3.0/24" || len(report.Regions[0].IPs) != 2 ||
+		report.Regions[0].IPs[0] != "203.0.113.1" || report.Regions[0].IPs[1] != "203.0.113.2" {
+		t.Fatalf("region 0 = %+v", report.Regions[0])
+	}
+	if report.Regions[1].Subnet != "4.5.6.0/24" || len(report.Regions[1].IPs) != 2 ||
+		report.Regions[1].IPs[0] != "203.0.113.2" || report.Regions[1].IPs[1] != "203.0.113.3" {
+		t.Fatalf("region 1 = %+v", report.Regions[1])
+	}
 	if queries.Load() != 2 {
 		t.Fatalf("DoH queries = %d, want 2", queries.Load())
 	}
@@ -320,5 +331,199 @@ func TestResolverDialRoundRobin(t *testing.T) {
 		if host != expected {
 			t.Fatalf("dial %d used %s, want %s (all: %v)", index, host, expected, addresses)
 		}
+	}
+}
+
+func TestResolverDialSkipsDisabledIPs(t *testing.T) {
+	resolver := newTestResolver(t, "http://127.0.0.1:1/dns-query", []string{"1.2.3.0/24"})
+	target := upstreamTarget{Scheme: "https", Host: "upstream.test", Port: 443}
+	resolver.mu.Lock()
+	resolver.cache[target.key()] = &cachedResolution{
+		report: ResolutionReport{
+			Host:   target.Host,
+			Scheme: target.Scheme,
+			Port:   target.Port,
+			IPs: []ResolvedIP{
+				{IP: "203.0.113.2", LatencyMS: 10, Reachable: true, Disabled: true},
+				{IP: "203.0.113.3", LatencyMS: 30, Reachable: true},
+				{IP: "203.0.113.1", LatencyMS: 50, Reachable: true},
+			},
+		},
+		expiresAt: time.Now().Add(time.Hour),
+	}
+	resolver.mu.Unlock()
+
+	var addresses []string
+	resolver.dialFn = func(_ context.Context, _, address string) (net.Conn, error) {
+		addresses = append(addresses, address)
+		client, server := net.Pipe()
+		_ = server.Close()
+		return client, nil
+	}
+
+	for index := 0; index < 4; index++ {
+		conn, err := resolver.Dial(context.Background(), target)
+		if err != nil {
+			t.Fatalf("dial %d: %v", index, err)
+		}
+		_ = conn.Close()
+	}
+	want := []string{"203.0.113.3", "203.0.113.1", "203.0.113.3", "203.0.113.1"}
+	for index, expected := range want {
+		host, _, err := net.SplitHostPort(addresses[index])
+		if err != nil {
+			t.Fatalf("split %q: %v", addresses[index], err)
+		}
+		if host != expected {
+			t.Fatalf("dial %d used %s, want %s (all: %v)", index, host, expected, addresses)
+		}
+	}
+}
+
+func TestResolverRefreshPersistsRegionsAndDisabledIPs(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "refresh.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	var queries atomic.Int64
+	dohServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries.Add(1)
+		subnet := r.URL.Query().Get("edns_client_subnet")
+		answer := []map[string]any{
+			{"type": 1, "TTL": 60, "data": "203.0.113.10"},
+			{"type": 1, "TTL": 60, "data": "203.0.113.11"},
+		}
+		if subnet == "4.5.6.0/24" {
+			answer = answer[1:]
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"Status": 0, "Answer": answer})
+	}))
+	defer dohServer.Close()
+
+	newResolver := func() *upstreamResolver {
+		r := newUpstreamResolver(resolverOptions{
+			DOHURL:  dohServer.URL,
+			Subnets: []string{"1.2.3.0/24", "4.5.6.0/24"},
+			Logger:  stdlog.New(io.Discard, "", 0),
+			Store:   st,
+		})
+		r.probeFn = func(_ context.Context, _ upstreamTarget, ip string) (int64, bool) {
+			if ip == "203.0.113.10" {
+				return 30, true
+			}
+			return 60, true
+		}
+		return r
+	}
+
+	target := upstreamTarget{Scheme: "https", Host: "upstream.test", Port: 443}
+	first := newResolver()
+	t.Cleanup(first.Close)
+	report, err := first.Report(context.Background(), target)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(report.Regions) != 2 || len(report.Regions[0].IPs) != 2 || len(report.Regions[1].IPs) != 1 {
+		t.Fatalf("regions = %+v", report.Regions)
+	}
+
+	if err := first.SetIPEnabled(target, "203.0.113.10", false); err != nil {
+		t.Fatalf("disable ip: %v", err)
+	}
+	refreshed, err := first.Refresh(context.Background(), target)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	disabled := map[string]bool{}
+	for _, item := range refreshed.IPs {
+		disabled[item.IP] = item.Disabled
+	}
+	if !disabled["203.0.113.10"] || disabled["203.0.113.11"] {
+		t.Fatalf("disabled state after refresh = %+v", disabled)
+	}
+
+	saved, err := st.LoadUpstreamResolution(target.Scheme, target.Host, target.Port)
+	if err != nil {
+		t.Fatalf("load persisted: %v", err)
+	}
+	if saved == nil || len(saved.Regions) != 2 {
+		t.Fatalf("persisted regions = %+v", saved)
+	}
+	if len(saved.Regions[1].IPs) != 1 || saved.Regions[1].IPs[0] != "203.0.113.11" {
+		t.Fatalf("persisted region ips = %+v", saved.Regions[1].IPs)
+	}
+
+	// A restarted resolver must serve the same pool and disabled choice from
+	// SQLite without another DoH query.
+	before := queries.Load()
+	second := newResolver()
+	t.Cleanup(second.Close)
+	loaded, err := second.Report(context.Background(), target)
+	if err != nil {
+		t.Fatalf("report from database: %v", err)
+	}
+	if len(loaded.IPs) != 2 || len(loaded.Regions) != 2 {
+		t.Fatalf("loaded report = %+v", loaded)
+	}
+	for _, item := range loaded.IPs {
+		if item.IP == "203.0.113.10" && !item.Disabled {
+			t.Fatal("disabled state was not restored from SQLite")
+		}
+	}
+	if queries.Load() != before {
+		t.Fatalf("database pool was not used: DoH queries %d -> %d", before, queries.Load())
+	}
+}
+
+func TestResolverRefreshFailureKeepsLastPool(t *testing.T) {
+	var fail atomic.Bool
+	dohServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if fail.Load() {
+			http.Error(w, "doh down", http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"Status": 0,
+			"Answer": []map[string]any{{"type": 1, "TTL": 60, "data": "203.0.113.7"}},
+		})
+	}))
+	defer dohServer.Close()
+
+	resolver := newTestResolver(t, dohServer.URL, []string{"1.2.3.0/24"})
+	resolver.probeFn = func(context.Context, upstreamTarget, string) (int64, bool) { return 15, true }
+	target := upstreamTarget{Scheme: "https", Host: "upstream.test", Port: 443}
+	if _, err := resolver.Report(context.Background(), target); err != nil {
+		t.Fatalf("initial resolve: %v", err)
+	}
+
+	fail.Store(true)
+	report, err := resolver.Refresh(context.Background(), target)
+	if err == nil {
+		t.Fatal("expected refresh failure")
+	}
+	if report == nil || report.Error == "" {
+		t.Fatalf("failed refresh report = %+v", report)
+	}
+	if len(report.IPs) != 1 || report.IPs[0].IP != "203.0.113.7" {
+		t.Fatalf("last usable pool was discarded: %+v", report.IPs)
+	}
+
+	var dialed string
+	resolver.dialFn = func(_ context.Context, _, address string) (net.Conn, error) {
+		dialed = address
+		client, server := net.Pipe()
+		_ = server.Close()
+		return client, nil
+	}
+	conn, err := resolver.Dial(context.Background(), target)
+	if err != nil {
+		t.Fatalf("dial after failed refresh: %v", err)
+	}
+	_ = conn.Close()
+	host, _, err := net.SplitHostPort(dialed)
+	if err != nil || host != "203.0.113.7" {
+		t.Fatalf("dialed %q: %v", dialed, err)
 	}
 }

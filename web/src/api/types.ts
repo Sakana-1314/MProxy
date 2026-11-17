@@ -24,8 +24,37 @@ export interface RuleInput {
   upstream_host: string
   upstream_port: number
   upstream_scheme: RuleUpstreamScheme
-  enabled: boolean
   remark: string
+}
+
+export interface RuleIP {
+  id: number
+  ip: string
+  latency_ms: number
+  reachable: boolean
+  disabled: boolean
+}
+
+export interface RuleIPRegion {
+  subnet: string
+  latency_ms: number
+  ip_count: number
+  failed: boolean
+  ips: string[]
+}
+
+export interface RuleResolution {
+  scheme: 'http' | 'https'
+  host: string
+  port: number
+  duration_ms: number
+  resolved_at: number
+  ttl_seconds: number
+  region_ok: number
+  region_failed: number
+  error?: string
+  ips: RuleIP[]
+  regions: RuleIPRegion[]
 }
 
 export interface ProxyUser {

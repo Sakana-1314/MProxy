@@ -302,6 +302,53 @@ var migrations = [][]string{
 	{
 		`DELETE FROM settings WHERE key = 'site_name'`,
 	},
+	// version 11: the IP pool follows the MisakaStudy proxy_ip design. Rows keep
+	// a stable id and an enabled flag, stale addresses stay in the table with
+	// active = 0, and every region's DoH answer is stored separately so the
+	// management UI can show the pool per region after a restart.
+	{
+		`CREATE TABLE upstream_ips_v11 (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			scheme TEXT NOT NULL,
+			host TEXT NOT NULL COLLATE NOCASE,
+			port INTEGER NOT NULL,
+			ip TEXT NOT NULL,
+			latency_ms INTEGER NOT NULL DEFAULT -1,
+			reachable INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			active INTEGER NOT NULL DEFAULT 1,
+			updated_at INTEGER NOT NULL,
+			UNIQUE(scheme, host, port, ip)
+		)`,
+		`INSERT INTO upstream_ips_v11 (
+			scheme, host, port, ip, latency_ms, reachable, enabled, active, updated_at
+		)
+		SELECT scheme, host, port, ip, latency_ms, reachable, 1, 1,
+			CAST(strftime('%s', 'now') AS INTEGER)
+		FROM upstream_ips`,
+		`DROP TABLE upstream_ips`,
+		`ALTER TABLE upstream_ips_v11 RENAME TO upstream_ips`,
+		`CREATE TABLE IF NOT EXISTS upstream_regions (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			scheme TEXT NOT NULL,
+			host TEXT NOT NULL COLLATE NOCASE,
+			port INTEGER NOT NULL,
+			subnet TEXT NOT NULL,
+			latency_ms INTEGER NOT NULL DEFAULT -1,
+			ip_count INTEGER NOT NULL DEFAULT 0,
+			error TEXT NOT NULL DEFAULT '',
+			updated_at INTEGER NOT NULL,
+			UNIQUE(scheme, host, port, subnet)
+		)`,
+		`CREATE TABLE IF NOT EXISTS upstream_region_ips (
+			scheme TEXT NOT NULL,
+			host TEXT NOT NULL COLLATE NOCASE,
+			port INTEGER NOT NULL,
+			subnet TEXT NOT NULL,
+			ip TEXT NOT NULL,
+			PRIMARY KEY (scheme, host, port, subnet, ip)
+		)`,
+	},
 }
 
 func (s *Store) migrate() error {
