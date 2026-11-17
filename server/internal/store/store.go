@@ -11,10 +11,30 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Store wraps the SQLite database.
+// Store wraps the SQLite database. Writes go through a single connection so
+// SQLite never sees concurrent writers; reads use a small WAL-backed pool so
+// list/dashboard/auth queries do not queue behind DoH persistence.
 type Store struct {
 	db   *sql.DB
+	read *sql.DB
 	path string
+}
+
+const (
+	sqliteWriterParams = "_txlock=immediate&_busy_timeout=5000&_foreign_keys=on" +
+		"&_journal_mode=WAL&_synchronous=NORMAL" +
+		"&_pragma=cache_size(-4000)&_pragma=temp_store(MEMORY)"
+	sqliteReaderParams = "_busy_timeout=5000&_query_only=1" +
+		"&_pragma=cache_size(-4000)&_pragma=temp_store(MEMORY)"
+	readPoolSize = 4
+)
+
+func sqliteDSN(path, query string) string {
+	separator := "?"
+	if strings.Contains(path, "?") {
+		separator = "&"
+	}
+	return path + separator + query
 }
 
 // Open opens (and initialises) the SQLite database at path.
@@ -25,42 +45,54 @@ func Open(path string) (*Store, error) {
 		}
 	}
 
-	db, err := sql.Open("sqlite", path)
+	writer, err := sql.Open("sqlite", sqliteDSN(path, sqliteWriterParams))
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
+		return nil, fmt.Errorf("open sqlite writer: %w", err)
 	}
-	// A single connection keeps SQLite writes deterministic and avoids
-	// SQLITE_BUSY under the small concurrency this service needs.
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-
-	pragmas := []string{
-		"PRAGMA journal_mode = WAL",
-		"PRAGMA busy_timeout = 5000",
-		"PRAGMA synchronous = NORMAL",
-		"PRAGMA foreign_keys = ON",
-	}
-	for _, pragma := range pragmas {
-		if _, err := db.Exec(pragma); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("%s: %w", pragma, err)
-		}
-	}
-	if err := db.Ping(); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping sqlite: %w", err)
+	// One writer keeps SQLite writes deterministic; WAL readers run in parallel.
+	writer.SetMaxOpenConns(1)
+	writer.SetMaxIdleConns(1)
+	if err := writer.Ping(); err != nil {
+		_ = writer.Close()
+		return nil, fmt.Errorf("ping sqlite writer: %w", err)
 	}
 
-	s := &Store{db: db, path: path}
+	s := &Store{db: writer, path: path}
 	if err := s.migrate(); err != nil {
-		_ = db.Close()
+		_ = writer.Close()
 		return nil, fmt.Errorf("migrate database: %w", err)
 	}
+
+	reader, err := sql.Open("sqlite", sqliteDSN(path, sqliteReaderParams))
+	if err != nil {
+		_ = writer.Close()
+		return nil, fmt.Errorf("open sqlite reader: %w", err)
+	}
+	reader.SetMaxOpenConns(readPoolSize)
+	reader.SetMaxIdleConns(readPoolSize)
+	reader.SetConnMaxIdleTime(10 * time.Minute)
+	if err := reader.Ping(); err != nil {
+		_ = reader.Close()
+		_ = writer.Close()
+		return nil, fmt.Errorf("ping sqlite reader: %w", err)
+	}
+	s.read = reader
 	return s, nil
 }
 
-// Close closes the underlying database.
-func (s *Store) Close() error { return s.db.Close() }
+// Close closes the read pool and the writer.
+func (s *Store) Close() error {
+	var firstErr error
+	if s.read != nil {
+		firstErr = s.read.Close()
+	}
+	if s.db != nil {
+		if err := s.db.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
 
 // Path returns the database file path.
 func (s *Store) Path() string { return s.path }
@@ -348,6 +380,14 @@ var migrations = [][]string{
 			ip TEXT NOT NULL,
 			PRIMARY KEY (scheme, host, port, subnet, ip)
 		)`,
+	},
+	// version 12: the active pool is loaded on every resolver cache fill. A
+	// partial index covers the target filter and the latency ordering so the
+	// query no longer sorts through a temp B-tree.
+	{
+		`CREATE INDEX IF NOT EXISTS idx_upstream_ips_pool
+			ON upstream_ips(scheme, host, port, enabled DESC, reachable DESC, latency_ms ASC, ip ASC)
+			WHERE active = 1`,
 	},
 }
 

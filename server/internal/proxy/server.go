@@ -43,7 +43,8 @@ type Server struct {
 	stats    *trafficStats
 	logger   *stdlog.Logger
 
-	auth credentialCache
+	auth          credentialCache
+	userSnapshots userCache
 
 	adminMu      sync.RWMutex
 	adminHandler http.Handler
@@ -91,7 +92,11 @@ func New(opts Options) (*Server, error) {
 	}
 	s.matcher.Reload(rules)
 	go s.resolver.Warm(targetsFromRules(rules))
-	s.stats = newTrafficStats(opts.Store, logger, opts.StatsFlushInterval)
+	s.stats = newTrafficStats(opts.Store, logger, opts.StatsFlushInterval, func() {
+		// Batched traffic was just committed; refresh auth snapshots so quota
+		// checks see the new total_bytes before the next connection.
+		s.userSnapshots.Clear()
+	})
 	s.httpServer = &http.Server{
 		Handler:           http.HandlerFunc(s.handle),
 		ReadHeaderTimeout: 20 * time.Second,
@@ -180,7 +185,10 @@ func (s *Server) ReloadRules() error {
 }
 
 // InvalidateAuthCache clears cached proxy credentials after user changes.
-func (s *Server) InvalidateAuthCache() { s.auth.Clear() }
+func (s *Server) InvalidateAuthCache() {
+	s.auth.Clear()
+	s.userSnapshots.Clear()
+}
 
 // SetAdminHandler mounts the admin API/SPA on the shared proxy port. The
 // caller must set it before Start; later updates are safe but unusual.

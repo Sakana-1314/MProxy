@@ -159,6 +159,63 @@ func TestUpstreamPoolRegionsAndEnabledState(t *testing.T) {
 	}
 }
 
+func TestStoreReadPoolIsReadOnly(t *testing.T) {
+	st := openTestStore(t)
+	if _, err := st.read.Exec(
+		`INSERT INTO settings (key, value) VALUES ('read_only_probe', 'x')`,
+	); err == nil {
+		t.Fatal("read pool accepted a write")
+	}
+}
+
+func TestUpstreamInactiveIPsArePrunedAfterRetention(t *testing.T) {
+	st := openTestStore(t)
+	target := struct {
+		scheme string
+		host   string
+		port   int
+	}{"https", "prune.test", 443}
+	save := func(ips []UpstreamIP) {
+		t.Helper()
+		if err := st.SaveUpstreamResolution(&UpstreamResolution{
+			Scheme:     target.scheme,
+			Host:       target.host,
+			Port:       target.port,
+			ResolvedAt: nowUnix(),
+			TTLSeconds: 60,
+			IPs:        ips,
+		}); err != nil {
+			t.Fatalf("save resolution: %v", err)
+		}
+	}
+
+	save([]UpstreamIP{
+		{IP: "203.0.113.1", LatencyMS: 10, Reachable: true},
+		{IP: "203.0.113.2", LatencyMS: 20, Reachable: true},
+	})
+	// Simulate an address that dropped out of DNS more than the retention
+	// window ago; the next successful refresh must remove it.
+	if _, err := st.db.Exec(
+		`UPDATE upstream_ips SET active = 0, updated_at = ?
+		 WHERE scheme = ? AND host = ? AND port = ? AND ip = ?`,
+		nowUnix()-ipRetentionSeconds-1, target.scheme, target.host, target.port, "203.0.113.2",
+	); err != nil {
+		t.Fatalf("age inactive ip: %v", err)
+	}
+	save([]UpstreamIP{{IP: "203.0.113.1", LatencyMS: 11, Reachable: true}})
+
+	var count int
+	if err := st.db.QueryRow(
+		`SELECT COUNT(*) FROM upstream_ips WHERE scheme = ? AND host = ? AND port = ? AND ip = ?`,
+		target.scheme, target.host, target.port, "203.0.113.2",
+	).Scan(&count); err != nil {
+		t.Fatalf("count pruned ip: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("inactive ip was not pruned, count = %d", count)
+	}
+}
+
 func TestUpstreamIPMigrationPreservesPool(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 	db, err := sql.Open("sqlite", path)

@@ -14,7 +14,7 @@ var ErrUnlimitedQuota = errors.New("unlimited quota account")
 // CountUsers returns the number of proxy users.
 func (s *Store) CountUsers() (int, error) {
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM proxy_users`).Scan(&count)
+	err := s.read.QueryRow(`SELECT COUNT(*) FROM proxy_users`).Scan(&count)
 	return count, err
 }
 
@@ -29,12 +29,12 @@ func (s *Store) ListUsers(keyword string, page, pageSize int) ([]ProxyUser, int,
 	}
 
 	var total int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM proxy_users"+where, args...).Scan(&total); err != nil {
+	if err := s.read.QueryRow("SELECT COUNT(*) FROM proxy_users"+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	args = append(args, pageSize, (page-1)*pageSize)
-	rows, err := s.db.Query(
+	rows, err := s.read.Query(
 		`SELECT id, username, password_hash, enabled, quota_bytes, total_bytes,
 		        expires_at, note, created_at, updated_at
 		 FROM proxy_users`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, args...)
@@ -56,7 +56,7 @@ func (s *Store) ListUsers(keyword string, page, pageSize int) ([]ProxyUser, int,
 
 // GetUserByUsername returns a proxy user by username.
 func (s *Store) GetUserByUsername(username string) (*ProxyUser, error) {
-	row := s.db.QueryRow(
+	row := s.read.QueryRow(
 		`SELECT id, username, password_hash, enabled, quota_bytes, total_bytes,
 		        expires_at, note, created_at, updated_at
 		 FROM proxy_users WHERE username = ?`, username)
@@ -65,7 +65,7 @@ func (s *Store) GetUserByUsername(username string) (*ProxyUser, error) {
 
 // GetUser returns a proxy user by id.
 func (s *Store) GetUser(id int64) (*ProxyUser, error) {
-	row := s.db.QueryRow(
+	row := s.read.QueryRow(
 		`SELECT id, username, password_hash, enabled, quota_bytes, total_bytes,
 		        expires_at, note, created_at, updated_at
 		 FROM proxy_users WHERE id = ?`, id)

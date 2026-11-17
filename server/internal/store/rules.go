@@ -28,12 +28,12 @@ func (s *Store) ListRules(keyword string, page, pageSize int) ([]Rule, int, erro
 	}
 
 	var total int
-	if err := s.db.QueryRow("SELECT COUNT(*) FROM rules"+where, args...).Scan(&total); err != nil {
+	if err := s.read.QueryRow("SELECT COUNT(*) FROM rules"+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	args = append(args, pageSize, (page-1)*pageSize)
-	rows, err := s.db.Query(
+	rows, err := s.read.Query(
 		`SELECT id, name, target_scheme, match_host, match_port, upstream_host, upstream_port,
 		        upstream_scheme, enabled, remark, created_at, updated_at
 		 FROM rules`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, args...)
@@ -55,7 +55,7 @@ func (s *Store) ListRules(keyword string, page, pageSize int) ([]Rule, int, erro
 
 // AllEnabledRules returns every enabled rule for the proxy matcher.
 func (s *Store) AllEnabledRules() ([]Rule, error) {
-	rows, err := s.db.Query(
+	rows, err := s.read.Query(
 		`SELECT id, name, target_scheme, match_host, match_port, upstream_host, upstream_port,
 		        upstream_scheme, enabled, remark, created_at, updated_at
 		 FROM rules WHERE enabled = 1 ORDER BY id ASC`)
@@ -77,7 +77,7 @@ func (s *Store) AllEnabledRules() ([]Rule, error) {
 
 // GetRule returns a rule by id.
 func (s *Store) GetRule(id int64) (*Rule, error) {
-	row := s.db.QueryRow(
+	row := s.read.QueryRow(
 		`SELECT id, name, target_scheme, match_host, match_port, upstream_host, upstream_port,
 		        upstream_scheme, enabled, remark, created_at, updated_at
 		 FROM rules WHERE id = ?`, id)
@@ -160,7 +160,7 @@ func (s *Store) DeleteRule(id int64) error {
 // CountEnabledRules returns the number of active rules.
 func (s *Store) CountEnabledRules() (int, error) {
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM rules WHERE enabled = 1`).Scan(&count)
+	err := s.read.QueryRow(`SELECT COUNT(*) FROM rules WHERE enabled = 1`).Scan(&count)
 	return count, err
 }
 

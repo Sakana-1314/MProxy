@@ -73,7 +73,7 @@ func (s *Store) FlushTraffic(hourly map[int64]TrafficDelta, userBytes map[int64]
 // TrafficTotalsSince sums requests and bytes from hourly buckets.
 func (s *Store) TrafficTotalsSince(since int64) (TrafficTotals, error) {
 	var totals TrafficTotals
-	err := s.db.QueryRow(
+	err := s.read.QueryRow(
 		`SELECT COALESCE(SUM(requests), 0), COALESCE(SUM(bytes), 0)
 		 FROM traffic_stats WHERE bucket >= ?`, since,
 	).Scan(&totals.Requests, &totals.Bytes)
@@ -82,7 +82,7 @@ func (s *Store) TrafficTotalsSince(since int64) (TrafficTotals, error) {
 
 // TrafficBucketsSince returns persisted hourly buckets at or after since.
 func (s *Store) TrafficBucketsSince(since int64) ([]TrafficBucket, error) {
-	rows, err := s.db.Query(
+	rows, err := s.read.Query(
 		`SELECT bucket, requests, bytes FROM traffic_stats
 		 WHERE bucket >= ? ORDER BY bucket`, since)
 	if err != nil {

@@ -44,11 +44,21 @@ func normalizeUpstream(key string) string {
 	return strings.ToLower(strings.TrimSpace(key))
 }
 
+const (
+	// ipRetentionSeconds keeps inactive addresses for troubleshooting but stops
+	// the pool table from growing forever as CDN nodes rotate.
+	ipRetentionSeconds = 30 * 24 * 60 * 60
+	ipUpsertBatch      = 100
+	regionInsertBatch  = 50
+	regionIPBatch      = 150
+)
+
 // SaveUpstreamResolution replaces the persisted IP pool for a target. Only
 // successful resolutions with at least one IP should be saved.
 //
-// Rows are never deleted: IPs missing from the new answer are marked inactive,
-// while reappearing IPs keep the admin's enabled choice. Region answers are
+// Rows are never deleted immediately: IPs missing from the new answer are
+// marked inactive, while reappearing IPs keep the admin's enabled choice.
+// Inactive rows older than the retention window are pruned. Region answers are
 // replaced as a whole because they describe the latest query only.
 func (s *Store) SaveUpstreamResolution(res *UpstreamResolution) error {
 	if res == nil {
@@ -91,32 +101,23 @@ func (s *Store) SaveUpstreamResolution(res *UpstreamResolution) error {
 		return err
 	}
 
-	stmt, err := tx.Prepare(
-		`INSERT INTO upstream_ips
-			(scheme, host, port, ip, latency_ms, reachable, enabled, active, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?)
-		 ON CONFLICT(scheme, host, port, ip) DO UPDATE SET
-			latency_ms = excluded.latency_ms,
-			reachable = excluded.reachable,
-			active = 1,
-			updated_at = excluded.updated_at`,
-	)
-	if err != nil {
+	// Deactivate only rows that are currently active; already inactive rows
+	// keep their old updated_at so retention pruning can still remove them.
+	if _, err := tx.Exec(
+		`UPDATE upstream_ips SET active = 0, updated_at = ?
+		 WHERE scheme = ? AND host = ? AND port = ? AND active = 1`,
+		now, scheme, host, res.Port,
+	); err != nil {
 		return err
 	}
-	defer stmt.Close()
-
-	active := make([]string, 0, len(res.IPs))
-	for _, item := range res.IPs {
-		if item.IP == "" {
-			continue
-		}
-		active = append(active, item.IP)
-		if _, err := stmt.Exec(scheme, host, res.Port, item.IP, item.LatencyMS, boolInt(item.Reachable), now); err != nil {
-			return err
-		}
+	if err := upsertUpstreamIPs(tx, scheme, host, res.Port, now, res.IPs); err != nil {
+		return err
 	}
-	if err := deactivateMissingIPs(tx, scheme, host, res.Port, now, active); err != nil {
+	if _, err := tx.Exec(
+		`DELETE FROM upstream_ips
+		 WHERE scheme = ? AND host = ? AND port = ? AND active = 0 AND updated_at < ?`,
+		scheme, host, res.Port, now-ipRetentionSeconds,
+	); err != nil {
 		return err
 	}
 
@@ -132,64 +133,163 @@ func (s *Store) SaveUpstreamResolution(res *UpstreamResolution) error {
 	); err != nil {
 		return err
 	}
-
-	regionStmt, err := tx.Prepare(
-		`INSERT INTO upstream_regions
-			(scheme, host, port, subnet, latency_ms, ip_count, error, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-	)
-	if err != nil {
+	if err := insertUpstreamRegions(tx, scheme, host, res.Port, now, res.Regions); err != nil {
 		return err
 	}
-	defer regionStmt.Close()
-	regionIPStmt, err := tx.Prepare(
-		`INSERT OR IGNORE INTO upstream_region_ips (scheme, host, port, subnet, ip)
-		 VALUES (?, ?, ?, ?, ?)`,
-	)
-	if err != nil {
+	if err := insertUpstreamRegionIPs(tx, scheme, host, res.Port, res.Regions); err != nil {
 		return err
 	}
-	defer regionIPStmt.Close()
+	return tx.Commit()
+}
 
-	for _, region := range res.Regions {
+func upsertUpstreamIPs(tx *sql.Tx, scheme, host string, port int, now int64, items []UpstreamIP) error {
+	seen := make(map[string]struct{}, len(items))
+	filtered := make([]UpstreamIP, 0, len(items))
+	for _, item := range items {
+		item.IP = strings.TrimSpace(item.IP)
+		if item.IP == "" {
+			continue
+		}
+		if _, exists := seen[item.IP]; exists {
+			continue
+		}
+		seen[item.IP] = struct{}{}
+		filtered = append(filtered, item)
+	}
+	for start := 0; start < len(filtered); start += ipUpsertBatch {
+		end := min(start+ipUpsertBatch, len(filtered))
+		statement := `INSERT INTO upstream_ips
+			(scheme, host, port, ip, latency_ms, reachable, enabled, active, updated_at)
+		 VALUES ` + ipValuePlaceholders(end-start) + `
+		 ON CONFLICT(scheme, host, port, ip) DO UPDATE SET
+			latency_ms = excluded.latency_ms,
+			reachable = excluded.reachable,
+			active = 1,
+			updated_at = excluded.updated_at`
+		args := make([]any, 0, (end-start)*7)
+		for _, item := range filtered[start:end] {
+			args = append(args, scheme, host, port, item.IP, item.LatencyMS, boolInt(item.Reachable), now)
+		}
+		if _, err := tx.Exec(statement, args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type regionRow struct {
+	subnet    string
+	latencyMS int64
+	error     string
+	ips       []string
+}
+
+func prepareRegionRows(regions []UpstreamRegion) []regionRow {
+	index := make(map[string]int, len(regions))
+	rows := make([]regionRow, 0, len(regions))
+	for _, region := range regions {
 		subnet := strings.TrimSpace(region.Subnet)
 		if subnet == "" {
 			continue
 		}
 		ips := dedupeIPStrings(region.IPs)
-		if _, err := regionStmt.Exec(scheme, host, res.Port, subnet, region.LatencyMS, len(ips), region.Error, now); err != nil {
-			return err
+		if position, exists := index[subnet]; exists {
+			rows[position] = regionRow{subnet: subnet, latencyMS: region.LatencyMS, error: region.Error, ips: ips}
+			continue
 		}
-		for _, ip := range ips {
-			if _, err := regionIPStmt.Exec(scheme, host, res.Port, subnet, ip); err != nil {
-				return err
-			}
-		}
+		index[subnet] = len(rows)
+		rows = append(rows, regionRow{subnet: subnet, latencyMS: region.LatencyMS, error: region.Error, ips: ips})
 	}
-	return tx.Commit()
+	return rows
 }
 
-func deactivateMissingIPs(tx *sql.Tx, scheme, host string, port int, now int64, active []string) error {
-	if len(active) == 0 {
-		_, err := tx.Exec(
-			`UPDATE upstream_ips SET active = 0, updated_at = ?
-			 WHERE scheme = ? AND host = ? AND port = ?`,
-			now, scheme, host, port,
-		)
-		return err
+func insertUpstreamRegions(tx *sql.Tx, scheme, host string, port int, now int64, regions []UpstreamRegion) error {
+	rows := prepareRegionRows(regions)
+	for start := 0; start < len(rows); start += regionInsertBatch {
+		end := min(start+regionInsertBatch, len(rows))
+		statement := `INSERT INTO upstream_regions
+			(scheme, host, port, subnet, latency_ms, ip_count, error, updated_at)
+		 VALUES ` + valuePlaceholders(end-start, 8)
+		args := make([]any, 0, (end-start)*8)
+		for _, row := range rows[start:end] {
+			args = append(args, scheme, host, port, row.subnet, row.latencyMS, len(row.ips), row.error, now)
+		}
+		if _, err := tx.Exec(statement, args...); err != nil {
+			return err
+		}
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(active)), ",")
-	args := make([]any, 0, len(active)+4)
-	args = append(args, now, scheme, host, port)
-	for _, ip := range active {
-		args = append(args, ip)
+	return nil
+}
+
+func insertUpstreamRegionIPs(tx *sql.Tx, scheme, host string, port int, regions []UpstreamRegion) error {
+	rows := prepareRegionRows(regions)
+	type regionIP struct {
+		subnet string
+		ip     string
 	}
-	_, err := tx.Exec(
-		`UPDATE upstream_ips SET active = 0, updated_at = ?
-		 WHERE scheme = ? AND host = ? AND port = ? AND ip NOT IN (`+placeholders+`)`,
-		args...,
+	pairs := make([]regionIP, 0, len(rows)*3)
+	for _, row := range rows {
+		for _, ip := range row.ips {
+			pairs = append(pairs, regionIP{subnet: row.subnet, ip: ip})
+		}
+	}
+	for start := 0; start < len(pairs); start += regionIPBatch {
+		end := min(start+regionIPBatch, len(pairs))
+		statement := `INSERT OR IGNORE INTO upstream_region_ips
+			(scheme, host, port, subnet, ip)
+		 VALUES ` + valuePlaceholders(end-start, 5)
+		args := make([]any, 0, (end-start)*5)
+		for _, pair := range pairs[start:end] {
+			args = append(args, scheme, host, port, pair.subnet, pair.ip)
+		}
+		if _, err := tx.Exec(statement, args...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func valuePlaceholders(rows, columns int) string {
+	row := "(" + strings.TrimSuffix(strings.Repeat("?,", columns), ",") + ")"
+	return strings.TrimSuffix(strings.Repeat(row+",", rows), ",")
+}
+
+func ipValuePlaceholders(rows int) string {
+	row := "(?, ?, ?, ?, ?, ?, 1, 1, ?)"
+	return strings.TrimSuffix(strings.Repeat(row+",", rows), ",")
+}
+
+// LoadUpstreamIPs loads only the active IP rows for a target. Resolution
+// refreshes use this instead of loading the whole region snapshot just to
+// re-apply the admin's enabled choices.
+func (s *Store) LoadUpstreamIPs(scheme, host string, port int) ([]UpstreamIP, error) {
+	scheme = normalizeUpstream(scheme)
+	host = normalizeUpstream(host)
+	rows, err := s.read.Query(
+		`SELECT id, ip, latency_ms, reachable, enabled FROM upstream_ips
+		 WHERE scheme = ? AND host = ? AND port = ? AND active = 1
+		 ORDER BY enabled DESC, reachable DESC, latency_ms ASC, ip ASC`,
+		scheme, host, port,
 	)
-	return err
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]UpstreamIP, 0, 16)
+	for rows.Next() {
+		var (
+			item    UpstreamIP
+			enabled int
+			reach   int
+		)
+		if err := rows.Scan(&item.ID, &item.IP, &item.LatencyMS, &reach, &enabled); err != nil {
+			return nil, err
+		}
+		item.Reachable = reach != 0
+		item.Enabled = enabled != 0
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 
 // LoadUpstreamResolution loads the last persisted, active IP pool.
@@ -197,7 +297,7 @@ func (s *Store) LoadUpstreamResolution(scheme, host string, port int) (*Upstream
 	scheme = normalizeUpstream(scheme)
 	host = normalizeUpstream(host)
 	res := &UpstreamResolution{Scheme: scheme, Host: host, Port: port}
-	err := s.db.QueryRow(
+	err := s.read.QueryRow(
 		`SELECT duration_ms, resolved_at, ttl_seconds, region_ok, region_failed, error
 		 FROM upstream_resolutions WHERE scheme = ? AND host = ? AND port = ?`,
 		scheme, host, port,
@@ -209,34 +309,11 @@ func (s *Store) LoadUpstreamResolution(scheme, host string, port int) (*Upstream
 		return nil, err
 	}
 
-	rows, err := s.db.Query(
-		`SELECT id, ip, latency_ms, reachable, enabled FROM upstream_ips
-		 WHERE scheme = ? AND host = ? AND port = ? AND active = 1
-		 ORDER BY enabled DESC, reachable DESC, latency_ms ASC, ip ASC`,
-		scheme, host, port,
-	)
+	ips, err := s.LoadUpstreamIPs(scheme, host, port)
 	if err != nil {
 		return nil, err
 	}
-	for rows.Next() {
-		var (
-			item    UpstreamIP
-			enabled int
-			reach   int
-		)
-		if err := rows.Scan(&item.ID, &item.IP, &item.LatencyMS, &reach, &enabled); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		item.Reachable = reach != 0
-		item.Enabled = enabled != 0
-		res.IPs = append(res.IPs, item)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	rows.Close()
+	res.IPs = ips
 
 	regions, err := s.loadUpstreamRegions(scheme, host, port)
 	if err != nil {
@@ -247,7 +324,7 @@ func (s *Store) LoadUpstreamResolution(scheme, host string, port int) (*Upstream
 }
 
 func (s *Store) loadUpstreamRegions(scheme, host string, port int) ([]UpstreamRegion, error) {
-	rows, err := s.db.Query(
+	rows, err := s.read.Query(
 		`SELECT subnet, latency_ms, ip_count, error FROM upstream_regions
 		 WHERE scheme = ? AND host = ? AND port = ? ORDER BY id ASC`,
 		scheme, host, port,
@@ -277,9 +354,9 @@ func (s *Store) loadUpstreamRegions(scheme, host string, port int) ([]UpstreamRe
 	for position := range regions {
 		index[regions[position].Subnet] = position
 	}
-	ipRows, err := s.db.Query(
+	ipRows, err := s.read.Query(
 		`SELECT subnet, ip FROM upstream_region_ips
-		 WHERE scheme = ? AND host = ? AND port = ? ORDER BY rowid ASC`,
+		 WHERE scheme = ? AND host = ? AND port = ?`,
 		scheme, host, port,
 	)
 	if err != nil {

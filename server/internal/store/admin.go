@@ -15,7 +15,7 @@ var ErrNotFound = errors.New("record not found")
 // CountAdmins returns the number of management accounts.
 func (s *Store) CountAdmins() (int, error) {
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM admins`).Scan(&count)
+	err := s.read.QueryRow(`SELECT COUNT(*) FROM admins`).Scan(&count)
 	return count, err
 }
 
@@ -52,7 +52,7 @@ func (s *Store) SeedAdmin(username, password string) (created bool, err error) {
 
 // GetAdminByUsername returns an admin by username.
 func (s *Store) GetAdminByUsername(username string) (*Admin, error) {
-	row := s.db.QueryRow(
+	row := s.read.QueryRow(
 		`SELECT id, username, password_hash, password_changed_at, created_at, updated_at
 		 FROM admins WHERE username = ?`, username)
 	return scanAdmin(row)
@@ -60,7 +60,7 @@ func (s *Store) GetAdminByUsername(username string) (*Admin, error) {
 
 // GetAdminByID returns an admin by id.
 func (s *Store) GetAdminByID(id int64) (*Admin, error) {
-	row := s.db.QueryRow(
+	row := s.read.QueryRow(
 		`SELECT id, username, password_hash, password_changed_at, created_at, updated_at
 		 FROM admins WHERE id = ?`, id)
 	return scanAdmin(row)

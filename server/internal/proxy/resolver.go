@@ -791,16 +791,13 @@ func (r *upstreamResolver) applyEnabledState(target upstreamTarget, report *Reso
 	if r.store == nil {
 		return
 	}
-	saved, err := r.store.LoadUpstreamResolution(target.Scheme, target.Host, target.Port)
+	saved, err := r.store.LoadUpstreamIPs(target.Scheme, target.Host, target.Port)
 	if err != nil {
 		r.logger.Printf("[doh] 读取 IP 启用状态失败 %s: %v", target.Host, err)
 		return
 	}
-	if saved == nil {
-		return
-	}
-	enabled := make(map[string]bool, len(saved.IPs))
-	for _, item := range saved.IPs {
+	enabled := make(map[string]bool, len(saved))
+	for _, item := range saved {
 		enabled[item.IP] = item.Enabled
 	}
 	for index := range report.IPs {
