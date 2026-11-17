@@ -168,13 +168,13 @@ func TestStoreReadPoolIsReadOnly(t *testing.T) {
 	}
 }
 
-func TestUpstreamInactiveIPsArePrunedAfterRetention(t *testing.T) {
+func TestUpstreamInactiveIPsAreRetained(t *testing.T) {
 	st := openTestStore(t)
 	target := struct {
 		scheme string
 		host   string
 		port   int
-	}{"https", "prune.test", 443}
+	}{"https", "retain.test", 443}
 	save := func(ips []UpstreamIP) {
 		t.Helper()
 		if err := st.SaveUpstreamResolution(&UpstreamResolution{
@@ -193,26 +193,64 @@ func TestUpstreamInactiveIPsArePrunedAfterRetention(t *testing.T) {
 		{IP: "203.0.113.1", LatencyMS: 10, Reachable: true},
 		{IP: "203.0.113.2", LatencyMS: 20, Reachable: true},
 	})
-	// Simulate an address that dropped out of DNS more than the retention
-	// window ago; the next successful refresh must remove it.
+	if err := st.SetUpstreamIPEnabled(target.scheme, target.host, target.port, "203.0.113.2", false); err != nil {
+		t.Fatalf("disable ip: %v", err)
+	}
+
+	// Simulate an address that dropped out of DNS a long time ago. Resolution
+	// answers rotate, so the row must survive indefinitely: deleting it would
+	// reset the admin's enabled choice when the same address comes back.
+	lastSeen := nowUnix() - 365*24*60*60
 	if _, err := st.db.Exec(
 		`UPDATE upstream_ips SET active = 0, updated_at = ?
 		 WHERE scheme = ? AND host = ? AND port = ? AND ip = ?`,
-		nowUnix()-ipRetentionSeconds-1, target.scheme, target.host, target.port, "203.0.113.2",
+		lastSeen, target.scheme, target.host, target.port, "203.0.113.2",
 	); err != nil {
 		t.Fatalf("age inactive ip: %v", err)
 	}
 	save([]UpstreamIP{{IP: "203.0.113.1", LatencyMS: 11, Reachable: true}})
 
-	var count int
+	var (
+		active    int
+		enabled   int
+		updatedAt int64
+	)
 	if err := st.db.QueryRow(
-		`SELECT COUNT(*) FROM upstream_ips WHERE scheme = ? AND host = ? AND port = ? AND ip = ?`,
+		`SELECT active, enabled, updated_at FROM upstream_ips
+		 WHERE scheme = ? AND host = ? AND port = ? AND ip = ?`,
 		target.scheme, target.host, target.port, "203.0.113.2",
-	).Scan(&count); err != nil {
-		t.Fatalf("count pruned ip: %v", err)
+	).Scan(&active, &enabled, &updatedAt); err != nil {
+		t.Fatalf("inactive ip was deleted: %v", err)
 	}
-	if count != 0 {
-		t.Fatalf("inactive ip was not pruned, count = %d", count)
+	if active != 0 || enabled != 0 {
+		t.Fatalf("inactive ip active/enabled = %d/%d, want 0/0", active, enabled)
+	}
+	if updatedAt != lastSeen {
+		t.Fatalf("inactive ip updated_at = %d, want last-seen %d", updatedAt, lastSeen)
+	}
+	pool, err := st.LoadUpstreamIPs(target.scheme, target.host, target.port)
+	if err != nil {
+		t.Fatalf("load pool: %v", err)
+	}
+	if len(pool) != 1 || pool[0].IP != "203.0.113.1" {
+		t.Fatalf("served pool = %+v, want only .1", pool)
+	}
+
+	// When DNS returns the address it becomes active again but keeps the
+	// admin's disabled choice.
+	save([]UpstreamIP{
+		{IP: "203.0.113.1", LatencyMS: 11, Reachable: true},
+		{IP: "203.0.113.2", LatencyMS: 21, Reachable: true},
+	})
+	if err := st.db.QueryRow(
+		`SELECT active, enabled FROM upstream_ips
+		 WHERE scheme = ? AND host = ? AND port = ? AND ip = ?`,
+		target.scheme, target.host, target.port, "203.0.113.2",
+	).Scan(&active, &enabled); err != nil {
+		t.Fatalf("query reappeared ip: %v", err)
+	}
+	if active != 1 || enabled != 0 {
+		t.Fatalf("reappeared ip active/enabled = %d/%d, want 1/0", active, enabled)
 	}
 }
 

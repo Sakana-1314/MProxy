@@ -6,8 +6,9 @@ import (
 	"strings"
 )
 
-// UpstreamIP is one active DoH A record with its probe latency and the admin
-// controlled enabled flag.
+// UpstreamIP is one DoH A record with its probe latency and the admin
+// controlled enabled flag. Rows that the latest answer no longer contains stay
+// in the table with active = 0 and are not returned as part of the pool.
 type UpstreamIP struct {
 	ID        int64  `json:"id"`
 	IP        string `json:"ip"`
@@ -45,21 +46,19 @@ func normalizeUpstream(key string) string {
 }
 
 const (
-	// ipRetentionSeconds keeps inactive addresses for troubleshooting but stops
-	// the pool table from growing forever as CDN nodes rotate.
-	ipRetentionSeconds = 30 * 24 * 60 * 60
-	ipUpsertBatch      = 100
-	regionInsertBatch  = 50
-	regionIPBatch      = 150
+	ipUpsertBatch     = 100
+	regionInsertBatch = 50
+	regionIPBatch     = 150
 )
 
-// SaveUpstreamResolution replaces the persisted IP pool for a target. Only
+// SaveUpstreamResolution refreshes the persisted IP pool for a target. Only
 // successful resolutions with at least one IP should be saved.
 //
-// Rows are never deleted immediately: IPs missing from the new answer are
-// marked inactive, while reappearing IPs keep the admin's enabled choice.
-// Inactive rows older than the retention window are pruned. Region answers are
-// replaced as a whole because they describe the latest query only.
+// IPs missing from the new answer are soft-deleted (active = 0) and never
+// physically removed: DNS answers rotate, so an address can disappear for
+// weeks and come back. Keeping the row preserves the admin's enabled choice
+// and the address history across those rotations. Region answers are replaced
+// as a whole because they describe the latest query only.
 func (s *Store) SaveUpstreamResolution(res *UpstreamResolution) error {
 	if res == nil {
 		return errors.New("nil upstream resolution")
@@ -102,7 +101,7 @@ func (s *Store) SaveUpstreamResolution(res *UpstreamResolution) error {
 	}
 
 	// Deactivate only rows that are currently active; already inactive rows
-	// keep their old updated_at so retention pruning can still remove them.
+	// keep their old updated_at as the last-seen timestamp.
 	if _, err := tx.Exec(
 		`UPDATE upstream_ips SET active = 0, updated_at = ?
 		 WHERE scheme = ? AND host = ? AND port = ? AND active = 1`,
@@ -111,13 +110,6 @@ func (s *Store) SaveUpstreamResolution(res *UpstreamResolution) error {
 		return err
 	}
 	if err := upsertUpstreamIPs(tx, scheme, host, res.Port, now, res.IPs); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(
-		`DELETE FROM upstream_ips
-		 WHERE scheme = ? AND host = ? AND port = ? AND active = 0 AND updated_at < ?`,
-		scheme, host, res.Port, now-ipRetentionSeconds,
-	); err != nil {
 		return err
 	}
 
